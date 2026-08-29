@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "skepis"
+version = "0.1.0"
+description = "Local-first exposure-aware evaluation tooling"
+requires-python = ">=3.11"
+dependencies = ["sibyl-memory-client>=0.7.0"]
+
+[project.scripts]
+skepis = "skepis.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

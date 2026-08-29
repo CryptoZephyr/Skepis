@@ -1,0 +1,29 @@
+# Local Python environments
+/.venv/
+/venv/
+/bin/
+/include/
+/lib/
+/lib64/
+/pyvenv.cfg
+
+# Generated Python files
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Local Skepis and database state
+/.skepis/
+*.db
+*.db-*
+
+# Local secrets and operator files
+.env
+.env.*
+*.pem
+*.key
+
+# Operating-system files
+.DS_Store
+Thumbs.db

@@ -1,0 +1,33 @@
+{
+  "benchmark": "checkout-benchmark",
+  "evaluation_subject": "checkout-agent",
+  "task_ids": [
+    "checkout-16",
+    "checkout-17",
+    "checkout-18"
+  ],
+  "protected_paths": {
+    "checkout-17": [
+      "evals/checkout-17/hidden/**",
+      "evals/checkout-17/solution.patch"
+    ]
+  },
+  "cases": {
+    "checkout-16": {
+      "input": "2 + 2",
+      "expected": "4",
+      "candidate_output": "4"
+    },
+    "checkout-17": {
+      "input": "3 + 3",
+      "expected": "6",
+      "candidate_output": "6"
+    },
+    "checkout-18": {
+      "input": "5 + 5",
+      "expected": "10",
+      "candidate_output": "10"
+    }
+  },
+  "policy": "exclude"
+}
