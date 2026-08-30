@@ -4,7 +4,7 @@ Skepis records objective exposure to protected benchmark material and uses that 
 
 Live demo: not available yet · Video: not available yet · Docs: this README · Repository: [GitHub](https://github.com/CryptoZephyr/Skepis) · Submission: not linked yet
 
-No public screenshot, hosted application, or demo video is included yet. The current proof runs locally from the deterministic fixture and the configured Sibyl Memory client.
+No public screenshot, hosted application, public demo URL, or demo video is included. The current proof runs locally from the deterministic fixture and the configured Sibyl Memory client.
 
 Built with: Python 3.11+ · Sibyl Memory client · deterministic local fixture
 Status: local proof complete, no public deployment
@@ -57,9 +57,17 @@ Use `--repeat 3` to run the full repeatability proof. The command prints one JSO
 
 ## Product / Demo
 
-The current product surface is a local CLI. There is no frontend, hosted endpoint, public demo URL, or video asset yet.
+The current product surface is a local CLI. There is no frontend, hosted endpoint, or public demo URL.
 
 The repeatable demo is [demo/checkpoint12_demo.py](demo/checkpoint12_demo.py). The benchmark fixture is [examples/checkout-benchmark/fixture.json](examples/checkout-benchmark/fixture.json).
+
+The continuous fresh-session video segment is deferred. It will be produced and published separately after the repository proof is stable.
+
+## Prior Work
+
+Skepis builds on the installed Sibyl Memory client, using `MemoryClient.local` as its durable WARM and COLD boundary. The protected-read boundary, deterministic eligibility gate, fixture runner, deletion proof, and hardening tests are Skepis code in this repository. The repository's first public proof commit is `a094a91`.
+
+No prior public Skepis release, deployment, external user study, Base integration, or Virtuals Protocol integration is claimed.
 
 ## Architecture
 
@@ -86,6 +94,25 @@ Sibyl is authoritative for Skepis operational exposure state. The external read 
 | Local protected-read boundary | Opens the registered in-root file before creating the objective signal | The positive exposure claim has a concrete read receipt |
 | Deterministic fixture runner | Scores only the task IDs returned by the policy gate | The evaluation consequence is observable and repeatable |
 
+## Proof map
+
+| Judge claim | Exact implementation | Exact regression proof |
+| --- | --- | --- |
+| A protected read creates objective exposure | `src/skepis/capture/protected_read.py:ProtectedReadBoundary.read` calls `src/skepis/capture/local_path.py:LocalPathCapture.observe` | `tests/test_protected_read.py:ProtectedReadBoundaryTests.test_successful_read_returns_receipt_and_persists_evidence` |
+| Sibyl writes survive the writer process | `src/skepis/capture/local_path.py:LocalPathCapture.observe` calls `MemoryClient.set_entity` and `MemoryClient.write_event` | `tests/test_capture.py:LocalPathCaptureTests.test_unique_mapping_writes_warm_and_cold` |
+| A fresh process recalls exposure | `src/skepis/policy/gate.py:EvaluationGate._load_tasks` reads `MemoryClient.get_entity` and scoped COLD events | `tests/test_end_to_end.py:EndToEndProofTests.test_exposure_changes_fresh_session_task_selection` |
+| Exposed tasks change the policy result | `src/skepis/policy/gate.py:EvaluationGate.evaluate` calls `_apply_policy` | `tests/test_policy.py:EvaluationGateTests.test_partitions_and_excludes_exposed_tasks` |
+| The evaluator runs only the selected tasks | `src/skepis/eval/runner.py:run_fixture` uses `decision.selected_tasks` and `_score_case` | `tests/test_integration_runner.py:EvaluationRunnerIntegrationTests.test_real_command_runs_only_policy_selected_tasks` |
+| Removing Sibyl blocks a clean claim | `src/skepis/policy/gate.py:EvaluationGate._load_tasks` fails closed when WARM state is unavailable | `tests/test_deletion.py:DeletionProofTests.test_deleted_sibyl_state_fails_closed_in_fresh_session` |
+| Known failure modes remain conservative | `src/skepis/capture/local_path.py:LocalPathCapture.mark_observation_gap` and `src/skepis/policy/gate.py:EvaluationGate._read_scoped_observation_gap` preserve uncertainty | `tests/test_hardening.py:HardeningTests.test_partial_warm_cold_write_failure_blocks_clean_claim` and `tests/test_hardening.py:HardeningTests.test_concurrent_capture_preserves_both_exposures` |
+| The complete judge flow repeats without repair | `demo/checkpoint12_demo.py:_run_once` runs the fresh-project sequence | `tests/test_checkpoint12_demo.py:Checkpoint12DemoTests.test_demo_repeats_the_full_judge_proof_from_fresh_projects` |
+
+### Sibyl entry points
+
+- Write path: `LocalPathCapture.observe` writes the scoped `benchmark_exposure` entity with `MemoryClient.set_entity` and appends `benchmark_material_observed` with `MemoryClient.write_event`.
+- Read path: `EvaluationGate._load_tasks` reads the WARM entity with `MemoryClient.get_entity` and checks scoped COLD gaps with `MemoryClient.read_events`.
+- Decision path: `EvaluationGate.evaluate` applies `EXCLUDE`, `FLAG`, or `STRICT` through `_apply_policy` before `run_fixture` executes any task.
+
 ## What's running
 
 - Local WSL development environment with Python 3.14.4.
@@ -95,7 +122,7 @@ Sibyl is authoritative for Skepis operational exposure state. The external read 
 
 ## Evidence
 
-The current evidence was verified on 2026-08-29:
+The current evidence was verified on 2026-08-30. The public proof baseline is commit `a094a91` (`Initial public Skepis proof`) on `main`.
 
 - `demo/checkpoint12_demo.py --repeat 3` completed three fresh temporary projects without repair.
 - Each repeat started with `checkout-16`, `checkout-17`, and `checkout-18` clean.
@@ -105,6 +132,7 @@ The current evidence was verified on 2026-08-29:
 - Exact memory deletion followed by fresh `STRICT` evaluation returned `BLOCKED`, all tasks `UNKNOWN`, no selected or evaluated tasks, and `clean_claim_permitted: false`.
 - The configured WSL suite passed 58 tests with 0 skips.
 - The Windows suite passed 58 tests with 6 dependency-based skips because its interpreter cannot import the configured Sibyl client for fresh-process proofs.
+- The release boundary was checked against the current [official hackathon rules](https://hack.sibyllabs.org/rules): public GitHub repository, OSI-approved license, real commit history, proof-mapped README, Prior Work declaration, fresh-session recall evidence, timestamp or commit evidence, and two public posts. The two posts remain intentionally unsubmitted.
 
 The complete automated demo assertion is [tests/test_checkpoint12_demo.py](tests/test_checkpoint12_demo.py). The broader source tests are in [tests](tests).
 
@@ -170,17 +198,17 @@ The deterministic demo needs the Sibyl Memory client declared in [pyproject.toml
 - The only proven hard-exposure route is the controlled `skepis exposure read` command.
 - Generic filesystem, Bash, script, MCP, and Codex activity is not objectively observed by this adapter and remains `INCOMPLETE_MONITORING`.
 - The runner is a deterministic fixture proof. It does not claim model scoring or Inspect AI integration.
-- There is no frontend, hosted service, public demo, demo video, or deployment evidence yet.
+- There is no frontend, hosted service, public demo URL, or demo video.
 - The verified environment is local. The local Sibyl store reports the FREE tier while the authenticated server reports a STAKE subscription. The local proof does not depend on upgrading the local tier.
 
 ## Roadmap
 
-- Open Checkpoint 13 submission-readiness work only after explicit authorization.
-- Add an OSI-approved license and verify the remaining submission-readiness evidence before claiming public release readiness.
-- Add public demo and video evidence only after those assets exist and the flow is verified.
+- Publish the demo video and build-log post only when explicitly authorized.
+- Complete PMF evidence separately. No external tester or public usage claim is made here.
+- Keep generic Codex activity, model scoring, Inspect AI, frontend, hosting, and partner integrations outside the proven surface until their own gates are met.
 
 Posts and public release operations are intentionally skipped in this pass.
 
 ## License
 
-No license file has been selected or added yet.
+This project is released under the [MIT License](LICENSE).
