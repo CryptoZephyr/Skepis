@@ -185,7 +185,7 @@ Sibyl is authoritative for Skepis operational exposure state. The external read 
 
 ## Evidence
 
-The current evidence was verified on 2026-09-01 in this working tree. The public proof baseline is commit `a094a91` (`Initial public Skepis proof`) on `main`. The generalized evaluation gate is published in commit `b31b8456da6916f9543db092b9625d5372e73fcc`, and the portable report gate is published in commit `910be72c12d3cdfff76d84afe7289c2c0d7957b7`.
+The current evidence was verified on 2026-09-01 in this working tree. The public proof baseline is commit `a094a91` (`Initial public Skepis proof`) on `main`. The generalized evaluation gate is published in commit `b31b8456da6916f9543db092b9625d5372e73fcc`, the portable report gate is published in commit `910be72c12d3cdfff76d84afe7289c2c0d7957b7`, and the complete MCP workflow is published in commit `38385c4` (`Complete MCP evaluation workflow`).
 
 - `demo/checkpoint12_demo.py --repeat 3` completed three fresh temporary projects without repair.
 - Each repeat started with `checkout-16`, `checkout-17`, and `checkout-18` clean.
