@@ -9,6 +9,7 @@ from typing import Any, Iterable, Mapping
 from uuid import uuid4
 
 from skepis.policy import DecisionStatus, EvaluationGate, EvaluationPolicy
+from skepis.report import derive_monitoring_coverage
 
 from .evaluator import (
     EvaluationRequest,
@@ -74,7 +75,14 @@ def run_evaluation(
             "requested_tasks": [str(task_id) for task_id in requested_input],
         },
     )
-    decision = gate.evaluate(requested_input, policy)
+    decision = gate.evaluate(requested_input, policy, run_id=resolved_run_id)
+    monitoring_coverage = derive_monitoring_coverage(
+        {
+            "memory_available": decision.memory_available,
+            "state_available": decision.state_available,
+            "reason": decision.reason,
+        }
+    )
     evaluator_result: EvaluationResult | None = None
     evaluator_error: str | None = None
     evaluator_error_type: str | None = None
@@ -105,8 +113,25 @@ def run_evaluation(
                     "evaluation_subject": resolved_subject,
                     "benchmark": resolved_benchmark,
                     "policy": decision.policy.value,
+                    "requested_tasks": list(decision.requested_tasks),
+                    "clean_tasks": list(decision.clean_tasks),
+                    "exposed_tasks": list(decision.exposed_tasks),
+                    "unknown_tasks": list(decision.unknown_tasks),
                     "selected_tasks": list(decision.selected_tasks),
+                    "excluded_tasks": list(decision.excluded_tasks),
+                    "flagged_tasks": list(decision.flagged_tasks),
+                    "status": "EVALUATOR_FAILED",
+                    "memory_available": decision.memory_available,
+                    "state_available": decision.state_available,
+                    "clean_claim_permitted": False,
+                    "reason": f"evaluator_failed:{evaluator_error_type}",
+                    "evaluated_tasks": [],
+                    "evaluation_result": None,
+                    "metrics": {},
+                    "score": None,
+                    "evaluation_complete": False,
                     "error": evaluator_error,
+                    "monitoring_coverage": monitoring_coverage,
                 },
             )
         else:
@@ -134,12 +159,30 @@ def run_evaluation(
                 "benchmark": resolved_benchmark,
                 "policy": decision.policy.value,
                 "status": decision.status.value,
+                "requested_tasks": list(decision.requested_tasks),
+                "clean_tasks": list(decision.clean_tasks),
+                "exposed_tasks": list(decision.exposed_tasks),
+                "unknown_tasks": list(decision.unknown_tasks),
+                "selected_tasks": list(decision.selected_tasks),
+                "excluded_tasks": list(decision.excluded_tasks),
+                "flagged_tasks": list(decision.flagged_tasks),
+                "memory_available": decision.memory_available,
+                "state_available": decision.state_available,
+                "reason": reason,
                 "evaluated_tasks": evaluated_tasks,
                 "evaluation_result": (
                     evaluator_result.as_dict() if evaluator_result is not None else None
                 ),
+                "metrics": dict(evaluator_result.metrics) if evaluator_result is not None else {},
+                "score": evaluator_result.score if evaluator_result is not None else None,
                 "evaluation_complete": evaluation_complete,
                 "clean_claim_permitted": clean_claim_permitted,
+                "monitoring_coverage": monitoring_coverage,
+                "evaluation_started_journaled": started_journaled,
+                "gate_decision_journaled": decision.journaled,
+                "evaluation_completed_journaled": True,
+                "journaled": started_journaled and decision.journaled,
+                "completed_at": _timestamp(),
             },
         )
 
@@ -171,6 +214,7 @@ def run_evaluation(
         "evaluation_completed_journaled": completed_journaled,
         "evaluation_failed_journaled": evaluation_failed_journaled,
         "journaled": started_journaled and decision.journaled and completed_journaled,
+        "monitoring_coverage": monitoring_coverage,
     }
     if evaluator_error is not None:
         exit_code = 1

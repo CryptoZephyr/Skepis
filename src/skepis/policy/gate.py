@@ -88,6 +88,8 @@ class EvaluationGate:
         self,
         task_ids: Iterable[str],
         policy: EvaluationPolicy | str,
+        *,
+        run_id: str | None = None,
     ) -> GateDecision:
         normalized_policy = self._normalize_policy(policy)
         classification = self.classify(task_ids)
@@ -119,6 +121,7 @@ class EvaluationGate:
             classification.state_available,
             claim_permitted,
             reason,
+            run_id,
         )
         if classification.state_available and not journaled:
             selected = ()
@@ -426,29 +429,31 @@ class EvaluationGate:
         state_available: bool,
         clean_claim_permitted: bool,
         reason: str,
+        run_id: str | None,
     ) -> bool:
         try:
-            self.memory.write_event(
-                extra={
-                    "event_type": "evaluation_gate_decision",
-                    "tenant_id": self.tenant_id,
-                    "evaluation_subject": self.evaluation_subject,
-                    "benchmark": self.benchmark_id,
-                    "policy": policy.value,
-                    "requested_tasks": list(requested),
-                    "clean_tasks": list(clean),
-                    "exposed_tasks": list(exposed),
-                    "unknown_tasks": list(unknown),
-                    "selected_tasks": list(selected),
-                    "excluded_tasks": list(excluded),
-                    "flagged_tasks": list(flagged),
-                    "status": status.value,
-                    "memory_available": memory_available,
-                    "state_available": state_available,
-                    "clean_claim_permitted": clean_claim_permitted,
-                    "reason": reason,
-                }
-            )
+            extra = {
+                "event_type": "evaluation_gate_decision",
+                "tenant_id": self.tenant_id,
+                "evaluation_subject": self.evaluation_subject,
+                "benchmark": self.benchmark_id,
+                "policy": policy.value,
+                "requested_tasks": list(requested),
+                "clean_tasks": list(clean),
+                "exposed_tasks": list(exposed),
+                "unknown_tasks": list(unknown),
+                "selected_tasks": list(selected),
+                "excluded_tasks": list(excluded),
+                "flagged_tasks": list(flagged),
+                "status": status.value,
+                "memory_available": memory_available,
+                "state_available": state_available,
+                "clean_claim_permitted": clean_claim_permitted,
+                "reason": reason,
+            }
+            if run_id is not None:
+                extra["run_id"] = run_id
+            self.memory.write_event(extra=extra)
         except Exception:
             return False
         return True

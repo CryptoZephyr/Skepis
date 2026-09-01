@@ -449,6 +449,10 @@ class GeneralizedEvaluationTests(unittest.TestCase):
             self.assertEqual(status_result["exposed_tasks"], ["refund-idempotency"])
             self.assertEqual(status_result["unknown_tasks"], [])
             self.assertEqual(len(status_result["clean_tasks"]), 8)
+            self.assertEqual(
+                status_result["monitoring_coverage"]["generic_agent_access"],
+                "INCOMPLETE_MONITORING",
+            )
 
             evaluation = subprocess.run(
                 [
@@ -478,6 +482,36 @@ class GeneralizedEvaluationTests(unittest.TestCase):
             self.assertEqual(evaluation_result["evaluation_result"]["evaluated_tasks"], selected)
             self.assertEqual(evaluation_result["metrics"]["received_count"], 8)
             self.assertTrue(evaluation_result["clean_claim_permitted"])
+            self.assertEqual(
+                evaluation_result["monitoring_coverage"]["protected_reads"],
+                "COMPLETE",
+            )
+
+            report = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "skepis",
+                    "report",
+                    "--config",
+                    str(config_path),
+                    "--json",
+                ],
+                cwd=root,
+                env=child_env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(report.returncode, 0, report.stderr)
+            report_result = json.loads(report.stdout)
+            self.assertEqual(report_result["evaluation"]["benchmark"], "payments-regression")
+            self.assertEqual(report_result["evaluation"]["evaluated_count"], 8)
+            self.assertTrue(report_result["clean_claim"]["permitted"])
+            self.assertEqual(
+                report_result["monitoring"]["generic_agent_access"],
+                "INCOMPLETE_MONITORING",
+            )
 
 
 if __name__ == "__main__":

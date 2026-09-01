@@ -30,6 +30,13 @@ from skepis.capture import (
 )
 from skepis.eval import CommandEvaluator, EvaluatorError, run_evaluation
 from skepis.policy import EvaluationGate
+from skepis.report import (
+    ReportError,
+    build_report,
+    derive_monitoring_coverage,
+    load_latest_evaluation,
+    render_report,
+)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -95,6 +102,21 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--task", dest="task_ids", action="append", default=[])
     run.add_argument("--policy", help="exclude, flag, or strict")
     run.add_argument("--json", action="store_true", dest="as_json")
+
+    report = commands.add_parser(
+        "report",
+        help="render a portable report from a completed policy-gated evaluation",
+    )
+    report.add_argument("--config", help="config path when reading the latest Sibyl run")
+    report.add_argument(
+        "--input",
+        type=Path,
+        help="saved JSON from `skepis eval run --json`; omit to read the latest Sibyl run",
+    )
+    report.add_argument("--run-id", help="select a specific completed Sibyl run")
+    report.add_argument("--format", choices=("text", "json", "markdown"))
+    report.add_argument("--json", action="store_true", dest="as_json")
+    report.add_argument("--output", type=Path, help="write the rendered report to a file")
     return parser
 
 
@@ -186,7 +208,7 @@ def _selected_tasks(requested: list[str], available: tuple[str, ...]) -> tuple[s
 
 def _status_payload(config: Any, classification: Any) -> dict[str, Any]:
     benchmark = require_benchmark(config)
-    return {
+    result = {
         "benchmark": benchmark.id,
         "evaluation_subject": benchmark.evaluation_subject,
         "requested_tasks": list(classification.requested_tasks),
@@ -200,6 +222,8 @@ def _status_payload(config: Any, classification: Any) -> dict[str, Any]:
         "reason": classification.reason,
         "journaled": False,
     }
+    result["monitoring_coverage"] = derive_monitoring_coverage(result)
+    return result
 
 
 def _cmd_status(args: argparse.Namespace) -> int:
@@ -218,6 +242,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
         print(json.dumps(result, sort_keys=True))
     else:
         _print_partitions(result, include_selection=False)
+        _print_monitoring(result["monitoring_coverage"])
         print("JOURNALED: false")
     return 0
 
@@ -301,7 +326,67 @@ def _cmd_eval_run(args: argparse.Namespace) -> int:
         print(f"SCORE: {result['score']}")
         print(f"EVALUATION_COMPLETE: {str(result['evaluation_complete']).lower()}")
         print(f"CLEAN_CLAIM_PERMITTED: {str(result['clean_claim_permitted']).lower()}")
+        _print_monitoring(result["monitoring_coverage"])
     return exit_code
+
+
+def _cmd_report(args: argparse.Namespace) -> int:
+    if args.input is not None and args.run_id is not None:
+        raise ConfigError("--run-id can only be used when reading the latest Sibyl run")
+    if args.as_json and args.format is not None:
+        raise ConfigError("--json cannot be combined with --format")
+
+    if args.input is not None:
+        try:
+            source = json.loads(args.input.read_text(encoding="utf-8"))
+        except OSError as exc:
+            raise ReportError(f"could not read report input {args.input}: {exc}") from exc
+        except json.JSONDecodeError as exc:
+            raise ReportError(f"report input is not valid JSON: {exc}") from exc
+        if not isinstance(source, dict):
+            raise ReportError("report input must be a JSON object")
+    else:
+        config = load_config(resolve_config_path(args.config), require_benchmark=True)
+        benchmark = require_benchmark(config)
+        memory = _open_memory(config.memory_db)
+        source = load_latest_evaluation(
+            memory,
+            tenant_id=config.tenant_id,
+            evaluation_subject=benchmark.evaluation_subject,
+            benchmark_id=benchmark.id,
+            run_id=args.run_id,
+        )
+
+    report = build_report(source)
+    output_format = _report_format(args.format, args.as_json, args.output)
+    rendered = render_report(report, output_format)
+    if args.output is None:
+        sys.stdout.write(rendered)
+    else:
+        try:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(rendered, encoding="utf-8")
+        except OSError as exc:
+            raise ReportError(f"could not write report {args.output}: {exc}") from exc
+    return 0
+
+
+def _report_format(
+    requested: str | None,
+    as_json: bool,
+    output: Path | None,
+) -> str:
+    if as_json:
+        return "json"
+    if requested is not None:
+        return requested
+    if output is not None:
+        suffix = output.suffix.lower()
+        if suffix == ".json":
+            return "json"
+        if suffix in {".md", ".markdown"}:
+            return "markdown"
+    return "text"
 
 
 def _parse_evaluator_command(value: str) -> tuple[str, ...]:
@@ -345,6 +430,12 @@ def _print_partitions(result: dict[str, Any], *, include_selection: bool) -> Non
     print(f"STATUS: {result['status']}")
 
 
+def _print_monitoring(coverage: dict[str, str]) -> None:
+    print(f"PROTECTED_READS: {coverage['protected_reads']}")
+    print(f"GENERIC_AGENT_ACCESS: {coverage['generic_agent_access']}")
+    print(f"SIBYL_STATE: {coverage['sibyl_state']}")
+
+
 def _display_tasks(tasks: Any) -> str:
     if tasks is None:
         return "not applied"
@@ -364,8 +455,10 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_protected_read(args)
         if args.command == "eval" and args.evaluation_command == "run":
             return _cmd_eval_run(args)
+        if args.command == "report":
+            return _cmd_report(args)
         raise ConfigError("no command selected")
-    except ConfigError as exc:
+    except (ConfigError, ReportError) as exc:
         print(f"skepis configuration error: {exc}", file=sys.stderr)
         return 2
     except Exception as exc:
