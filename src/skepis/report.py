@@ -24,6 +24,37 @@ _SENSITIVE_METRIC_TOKENS = (
     "secret",
     "solution",
 )
+_PROVENANCE_EVENT_TYPES = {
+    "benchmark_material_observed",
+    "observation_gap_detected",
+}
+_SAFE_PROVENANCE_REASONS = {
+    "protected_answer_accessed",
+    "controlled_protected_read",
+    "incomplete_monitoring",
+    "monitoring_read_unavailable",
+    "ambiguous_task_mapping",
+    "ambiguous_protected_resource_mapping",
+}
+_SAFE_PROVENANCE_REASON_PREFIXES = (
+    "protected_read_failed:",
+    "memory_operation_failed:",
+    "invalid_protected_path:",
+)
+_SAFE_PROVENANCE_EXCEPTION_NAMES = {
+    "APIError",
+    "FileNotFoundError",
+    "IsADirectoryError",
+    "KeyError",
+    "MemoryError",
+    "NotADirectoryError",
+    "NotFoundError",
+    "OSError",
+    "PermissionError",
+    "RuntimeError",
+    "TypeError",
+    "ValueError",
+}
 
 
 def build_report(
@@ -238,6 +269,191 @@ def load_latest_evaluation(
     scope = f"{tenant_id}/{evaluation_subject}/{benchmark_id}"
     suffix = f" and run {run_id}" if run_id is not None else ""
     raise ReportError(f"no completed evaluation found for {scope}{suffix}")
+
+
+def load_scoped_exposure_provenance(
+    memory: Any,
+    *,
+    tenant_id: str,
+    evaluation_subject: str,
+    benchmark_id: str,
+    task_ids: list[str] | tuple[str, ...],
+) -> dict[str, Any]:
+    """Load only safe, scoped exposure and monitoring evidence from COLD."""
+
+    requested_keys = {
+        f"{benchmark_id}/{task_id}"
+        for task_id in task_ids
+        if _optional_text(task_id) is not None
+    }
+    unavailable = {
+        "status": "UNAVAILABLE",
+        "reason": "monitoring_read_unavailable",
+        "events": [],
+        "observation_gaps": [],
+    }
+    reader = getattr(memory, "read_events", None)
+    if not callable(reader):
+        return unavailable
+    try:
+        raw_events = reader(limit=1000)
+    except Exception as exc:
+        return {
+            **unavailable,
+            "reason": f"monitoring_read_failed:{type(exc).__name__}",
+        }
+    if not isinstance(raw_events, list):
+        return {
+            **unavailable,
+            "reason": "monitoring_read_failed:invalid_event_result",
+        }
+
+    exposure_events: list[dict[str, Any]] = []
+    observation_gaps: list[dict[str, Any]] = []
+    for event in raw_events:
+        if not isinstance(event, Mapping):
+            return {
+                **unavailable,
+                "reason": "monitoring_read_failed:invalid_event",
+            }
+        try:
+            extra = _event_extra(event.get("extra", event))
+        except ReportError:
+            return {
+                **unavailable,
+                "reason": "monitoring_read_failed:invalid_event_extra",
+            }
+        if extra.get("event_type") not in _PROVENANCE_EVENT_TYPES:
+            continue
+        if (
+            extra.get("tenant_id") != tenant_id
+            or extra.get("evaluation_subject") != evaluation_subject
+            or extra.get("benchmark") != benchmark_id
+        ):
+            continue
+        projected = _project_exposure_event(event, extra, requested_keys)
+        if projected is None:
+            continue
+        if projected["event_type"] == "observation_gap_detected":
+            observation_gaps.append(projected)
+        else:
+            exposure_events.append(projected)
+
+    truncated = len(raw_events) == 1000
+    if truncated or observation_gaps:
+        return {
+            "status": "INCOMPLETE_MONITORING",
+            "reason": "provenance_truncated" if truncated else "incomplete_monitoring",
+            "events": exposure_events,
+            "observation_gaps": observation_gaps,
+        }
+    return {
+        "status": "AVAILABLE",
+        "reason": None,
+        "events": exposure_events,
+        "observation_gaps": observation_gaps,
+    }
+
+
+def _project_exposure_event(
+    event: Mapping[str, Any],
+    extra: Mapping[str, Any],
+    requested_keys: set[str],
+) -> dict[str, Any] | None:
+    event_type = _optional_text(extra.get("event_type"))
+    if event_type not in _PROVENANCE_EVENT_TYPES:
+        return None
+
+    task = _safe_provenance_text(extra.get("task"))
+    raw_matches = extra.get("matches")
+    matches: list[str] = []
+    if isinstance(raw_matches, (list, tuple)):
+        for raw_match in raw_matches:
+            match = _safe_provenance_text(raw_match)
+            if match in requested_keys and match not in matches:
+                matches.append(match)
+
+    if event_type == "benchmark_material_observed":
+        if task not in requested_keys:
+            return None
+    elif matches and not requested_keys.intersection(matches) and task not in requested_keys:
+        return None
+
+    projected: dict[str, Any] = {"event_type": event_type}
+    event_id = _safe_provenance_text(event.get("id") or event.get("event_id"))
+    if event_id is not None:
+        projected["event_id"] = event_id
+    observed_at = _safe_provenance_text(event.get("ts")) or _safe_provenance_text(
+        extra.get("observed_at")
+    )
+    if observed_at is not None:
+        projected["observed_at"] = observed_at
+    if task is not None and task in requested_keys:
+        projected["task"] = task
+    if matches:
+        projected["matches"] = matches
+
+    for key in ("resource", "session_id", "source_adapter", "observation_id"):
+        value = _safe_provenance_text(extra.get(key))
+        if value is not None:
+            projected[key] = value
+    reason = _safe_provenance_reason(extra.get("reason"))
+    if reason is not None:
+        projected["reason"] = reason
+    if isinstance(extra.get("duplicate"), bool):
+        projected["duplicate"] = extra["duplicate"]
+    if extra.get("monitoring_status") == "INCOMPLETE_MONITORING":
+        projected["monitoring_status"] = "INCOMPLETE_MONITORING"
+
+    evidence = _safe_provenance_evidence(extra.get("evidence"))
+    if evidence:
+        projected["read_evidence"] = evidence
+    return projected
+
+
+def _safe_provenance_text(value: Any, *, limit: int = 256) -> str | None:
+    text = _optional_text(value)
+    if text is None:
+        return None
+    if len(text) > limit:
+        return "redacted"
+    return text
+
+
+def _safe_provenance_reason(value: Any) -> str | None:
+    reason = _safe_provenance_text(value)
+    if reason is None:
+        return None
+    if reason in _SAFE_PROVENANCE_REASONS:
+        return reason
+    if any(reason.startswith(prefix) for prefix in _SAFE_PROVENANCE_REASON_PREFIXES):
+        suffix = reason.split(":", 1)[1]
+        if suffix in _SAFE_PROVENANCE_EXCEPTION_NAMES:
+            return reason
+    return "redacted"
+
+
+def _safe_provenance_evidence(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    safe: dict[str, Any] = {}
+    operation = _safe_provenance_text(value.get("operation"))
+    if operation is not None:
+        safe["operation"] = operation
+    status = _safe_provenance_text(value.get("status"))
+    if status is not None:
+        safe["status"] = status
+    bytes_read = value.get("bytes_read")
+    if isinstance(bytes_read, int) and not isinstance(bytes_read, bool) and bytes_read >= 0:
+        safe["bytes_read"] = bytes_read
+    content_sha256 = _safe_provenance_text(value.get("content_sha256"), limit=128)
+    if (
+        content_sha256 is not None
+        and len(content_sha256) == 64
+        and all(char in "0123456789abcdefABCDEF" for char in content_sha256)
+    ):
+        safe["content_sha256"] = content_sha256.lower()
+    return safe or None
 
 
 def render_report(report: Mapping[str, Any], output_format: str = "text") -> str:

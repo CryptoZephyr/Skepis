@@ -13,7 +13,10 @@ from skepis.config import (
     resolve_config_path,
 )
 from skepis.policy import EvaluationGate
-from skepis.report import derive_monitoring_coverage
+from skepis.report import (
+    derive_monitoring_coverage,
+    load_scoped_exposure_provenance,
+)
 
 
 def preflight(
@@ -67,8 +70,63 @@ def preflight(
     }
 
 
+def inspect(
+    config_path: str | Path = DEFAULT_CONFIG_NAME,
+    task_ids: Sequence[str] | None = None,
+    *,
+    memory: Any | None = None,
+) -> dict[str, Any]:
+    """Explain one preflight classification with scoped safe provenance."""
+
+    summary = preflight(config_path, task_ids, memory=memory)
+    config = load_config(resolve_config_path(config_path), require_benchmark=True)
+    benchmark = require_benchmark(config)
+    memory_client = memory if memory is not None else _open_memory(config.memory_db)
+
+    if not summary["memory_available"] or not summary["state_available"]:
+        provenance = {
+            "status": "UNAVAILABLE",
+            "reason": summary["reason"],
+            "events": [],
+            "observation_gaps": [],
+        }
+    else:
+        provenance = load_scoped_exposure_provenance(
+            memory_client,
+            tenant_id=config.tenant_id,
+            evaluation_subject=benchmark.evaluation_subject,
+            benchmark_id=benchmark.id,
+            task_ids=summary["requested_tasks"],
+        )
+        if summary["reason"] is not None:
+            provenance["status"] = "INCOMPLETE_MONITORING"
+            provenance["reason"] = summary["reason"]
+
+    return {
+        "status": "INSPECTED",
+        "benchmark": summary["benchmark"],
+        "evaluation_subject": summary["evaluation_subject"],
+        "eligibility": {
+            "requested_tasks": summary["requested_tasks"],
+            "clean_tasks": summary["clean_tasks"],
+            "exposed_tasks": summary["exposed_tasks"],
+            "unknown_tasks": summary["unknown_tasks"],
+            "memory_available": summary["memory_available"],
+            "state_available": summary["state_available"],
+            "reason": summary["reason"],
+        },
+        "policy": {
+            "mode": summary["policy"],
+            "applied": False,
+        },
+        "monitoring_coverage": summary["monitoring_coverage"],
+        "provenance": provenance,
+        "read_only": True,
+    }
+
+
 def create_server() -> Any:
-    """Create the one-tool FastMCP server."""
+    """Create the read-only Skepis FastMCP server."""
 
     try:
         from mcp.server.fastmcp import FastMCP
@@ -81,9 +139,10 @@ def create_server() -> Any:
     server = FastMCP(
         "skepis",
         instructions=(
-            "Skepis preflight is read-only. It classifies the configured task set "
-            "from scoped Sibyl state and never reads protected resources, journals "
-            "a decision, or runs an evaluator."
+            "Skepis preflight and inspect are read-only. They classify the configured "
+            "task set from scoped Sibyl state, and inspect exposes only safe scoped "
+            "provenance. Neither tool reads protected resources, journals a decision, "
+            "or runs an evaluator."
         ),
     )
 
@@ -108,6 +167,28 @@ def create_server() -> Any:
         task_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         return preflight(config_path, task_ids)
+
+    @server.tool(
+        name="skepis_inspect",
+        description=(
+            "Explain a Skepis preflight classification using scoped eligibility, "
+            "monitoring coverage, and safe exposure provenance. Raw event payloads "
+            "and protected contents are redacted. This read-only tool does not "
+            "write state, run policy, read protected resources, or run an evaluator."
+        ),
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        ),
+        structured_output=True,
+    )
+    def skepis_inspect(
+        config_path: str = str(DEFAULT_CONFIG_NAME),
+        task_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        return inspect(config_path, task_ids)
 
     return server
 
