@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from itertools import product
 import json
+import math
 from pathlib import Path
 import re
 import tomllib
@@ -26,12 +27,22 @@ class ConfigError(ValueError):
 
 
 @dataclass(frozen=True)
+class EvaluatorConfig:
+    """Configuration for a developer-supplied evaluator command."""
+
+    command: tuple[str, ...]
+    working_directory: Path
+    timeout_seconds: float = 300.0
+
+
+@dataclass(frozen=True)
 class BenchmarkConfig:
     id: str
     evaluation_subject: str
-    fixture: Path
     task_ids: tuple[str, ...]
     protected_paths: dict[str, tuple[str, ...]]
+    fixture: Path | None = None
+    evaluator: EvaluatorConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -149,9 +160,12 @@ def register_benchmark(
     *,
     benchmark_id: str | None,
     evaluation_subject: str | None,
-    fixture: str | Path | None,
     task_ids: Sequence[str],
     protected_paths: Mapping[str, Sequence[str]],
+    fixture: str | Path | None = None,
+    evaluator_command: Sequence[str] | None = None,
+    evaluator_working_directory: str | Path | None = None,
+    evaluator_timeout_seconds: float = 300.0,
 ) -> ProjectConfig:
     """Validate and persist one benchmark registration in an initialized project."""
 
@@ -160,13 +174,22 @@ def register_benchmark(
         raise ConfigError(
             f"benchmark already registered: {base.benchmark.id}. Reinitialize or edit the config explicitly"
         )
-    raw_benchmark = {
+    raw_benchmark: dict[str, Any] = {
         "id": benchmark_id,
         "evaluation_subject": evaluation_subject,
-        "fixture": fixture,
         "task_ids": list(task_ids),
         "protected_paths": {str(task_id): list(patterns) for task_id, patterns in protected_paths.items()},
     }
+    if fixture is not None:
+        raw_benchmark["fixture"] = fixture
+    if evaluator_command is not None:
+        if isinstance(evaluator_command, str):
+            raise ConfigError("evaluator command must be a sequence of arguments")
+        raw_benchmark["evaluator"] = {
+            "command": list(evaluator_command),
+            "working_directory": evaluator_working_directory or ".",
+            "timeout_seconds": evaluator_timeout_seconds,
+        }
     benchmark = _parse_benchmark(
         raw_benchmark,
         project_root=base.project_root,
@@ -191,9 +214,20 @@ def _parse_benchmark(
 ) -> BenchmarkConfig:
     benchmark_id = _scope_text(raw.get("id"), "benchmark id")
     evaluation_subject = _scope_text(raw.get("evaluation_subject"), "evaluation subject")
-    fixture = _resolve_path_within(raw.get("fixture"), project_root, "fixture")
-    if not fixture.is_file():
-        raise ConfigError(f"missing fixture: {fixture}")
+    fixture: Path | None = None
+    if "fixture" in raw:
+        fixture = _resolve_path_within(raw.get("fixture"), project_root, "fixture")
+        if not fixture.is_file():
+            raise ConfigError(f"missing fixture: {fixture}")
+
+    raw_evaluator = raw.get("evaluator")
+    if raw_evaluator is not None and not isinstance(raw_evaluator, Mapping):
+        raise ConfigError("malformed evaluator config: expected a TOML table")
+    evaluator = (
+        _parse_evaluator(raw_evaluator, project_root=project_root)
+        if raw_evaluator is not None
+        else None
+    )
 
     task_ids = _task_ids(raw.get("task_ids"))
     task_set = set(task_ids)
@@ -229,12 +263,49 @@ def _parse_benchmark(
     return BenchmarkConfig(
         id=benchmark_id,
         evaluation_subject=evaluation_subject,
-        fixture=fixture,
         task_ids=task_ids,
         protected_paths={
             task_id: tuple(patterns)
             for task_id, patterns in normalized_paths.items()
         },
+        fixture=fixture,
+        evaluator=evaluator,
+    )
+
+
+def _parse_evaluator(
+    raw: Mapping[str, Any],
+    *,
+    project_root: Path,
+) -> EvaluatorConfig:
+    command = raw.get("command")
+    if not isinstance(command, (list, tuple)) or not command:
+        raise ConfigError("missing evaluator command: expected a non-empty array")
+    normalized_command: list[str] = []
+    for index, value in enumerate(command):
+        if not isinstance(value, str) or not value.strip():
+            raise ConfigError(f"invalid evaluator command argument at index {index}")
+        normalized_command.append(_text(value, f"evaluator command argument {index}"))
+
+    working_directory = _resolve_path_within(
+        raw.get("working_directory", "."),
+        project_root,
+        "evaluator working_directory",
+    )
+    if not working_directory.is_dir():
+        raise ConfigError(f"evaluator working directory does not exist: {working_directory}")
+
+    timeout_value = raw.get("timeout_seconds", 300.0)
+    if isinstance(timeout_value, bool) or not isinstance(timeout_value, (int, float)):
+        raise ConfigError("evaluator timeout_seconds must be a positive number")
+    timeout_seconds = float(timeout_value)
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        raise ConfigError("evaluator timeout_seconds must be a positive number")
+
+    return EvaluatorConfig(
+        command=tuple(normalized_command),
+        working_directory=working_directory,
+        timeout_seconds=timeout_seconds,
     )
 
 
@@ -304,7 +375,7 @@ def _witnesses(pattern: str, hints: set[str]) -> set[str]:
 
 
 def _task_ids(value: Any) -> tuple[str, ...]:
-    if not isinstance(value, (list, tuple)) or not value:
+    if not isinstance(value, (list, tuple)):
         raise ConfigError("missing task ids")
     tasks: list[str] = []
     for raw_task_id in value:
@@ -378,14 +449,28 @@ def _render_config(config: ProjectConfig) -> str:
             "[benchmark]",
             f"id = {json.dumps(benchmark.id)}",
             f"evaluation_subject = {json.dumps(benchmark.evaluation_subject)}",
-            f"fixture = {json.dumps(_relative_path(benchmark.fixture, config.project_root))}",
             f"task_ids = {json.dumps(list(benchmark.task_ids))}",
         ]
     )
+    if benchmark.fixture is not None:
+        lines.insert(
+            len(lines) - 1,
+            f"fixture = {json.dumps(_relative_path(benchmark.fixture, config.project_root))}",
+        )
     if benchmark.protected_paths:
         lines.extend(["", "[benchmark.protected_paths]"])
         for task_id in sorted(benchmark.protected_paths):
             lines.append(
                 f"{json.dumps(task_id)} = {json.dumps(list(benchmark.protected_paths[task_id]))}"
             )
+    if benchmark.evaluator is not None:
+        lines.extend(
+            [
+                "",
+                "[benchmark.evaluator]",
+                f"command = {json.dumps(list(benchmark.evaluator.command))}",
+                f"working_directory = {json.dumps(_relative_path(benchmark.evaluator.working_directory, config.project_root))}",
+                f"timeout_seconds = {json.dumps(benchmark.evaluator.timeout_seconds)}",
+            ]
+        )
     return "\n".join(lines) + "\n"

@@ -4,9 +4,9 @@ Skepis records objective exposure to protected benchmark material and uses that 
 
 Live demo: not available yet · Video: not available yet · Docs: this README · Repository: [GitHub](https://github.com/CryptoZephyr/Skepis) · Submission: not linked yet
 
-No public screenshot, hosted application, public demo URL, or demo video is included. The current proof runs locally from the deterministic fixture and the configured Sibyl Memory client.
+No public screenshot, hosted application, public demo URL, or demo video is included. The product path runs locally from developer configuration and the configured Sibyl Memory client. The deterministic fixture remains a historical example.
 
-Built with: Python 3.11+ · Sibyl Memory client · deterministic local fixture
+Built with: Python 3.11+ · Sibyl Memory client · configured evaluator command
 Status: local proof complete, no public deployment
 
 ## The problem
@@ -26,7 +26,7 @@ The product invariant is simple:
 1. Register a benchmark, its task IDs, and its protected local paths.
 2. Route a protected read through `skepis exposure read`.
 3. Persist the exposure in Sibyl WARM state and append a COLD provenance event.
-4. Start a fresh evaluation process. The policy gate partitions tasks into `CLEAN`, `EXPOSED`, and `UNKNOWN`, then runs only the allowed task set.
+4. Start a fresh evaluation process. The policy gate partitions tasks into `CLEAN`, `EXPOSED`, and `UNKNOWN`, then hands only the allowed task set to the configured evaluator.
 
 ```mermaid
 flowchart LR
@@ -34,9 +34,19 @@ flowchart LR
     Read --> Capture["Objective exposure capture"]
     Capture --> Sibyl["Sibyl WARM state and COLD event"]
     Sibyl --> Gate["Fresh-session policy gate"]
-    Gate --> Runner["Deterministic evaluation runner"]
-    Runner --> Result["Eligible task set and score"]
+    Gate --> Runner["Configured evaluator command"]
+    Runner --> Result["Structured evaluator result"]
 ```
+
+## Evaluator contract
+
+Normal benchmark registration does not require a fixture. Register the benchmark, semantic task IDs, protected paths, and a developer-supplied evaluator command. `skepis eval run` starts that command only after the policy gate selects the task set.
+
+For example, a benchmark can register an evaluator with `skepis benchmark register --evaluator-command "python evaluate.py"`. The command can load its own benchmark data and choose its own scoring logic.
+
+The command is run without a shell. Skepis provides the selected IDs in `SKEPIS_TASK_IDS` as JSON and writes the complete request to the file named by `SKEPIS_EVALUATION_REQUEST`. The request contains `benchmark_id`, `evaluation_subject`, `policy`, `run_id`, and `task_ids`. The command must return one JSON object on standard output with an `evaluated_tasks` array. It may add `metrics`, `score`, `details`, or other evaluator-defined fields.
+
+Skepis rejects a result that names a task outside the policy-selected set. If the command evaluates only part of the selected set, the run is incomplete and no clean claim is permitted.
 
 ## Why Sibyl Memory matters
 
@@ -46,7 +56,7 @@ The proof depends on that boundary. After the memory database is removed, a fres
 
 ## Try it
 
-The fastest judge path is the repeatable Checkpoint 12 demo. It creates a fresh temporary project, registers the fixture, shows a clean baseline, performs a controlled read of `checkout-17`, starts a new process to recall the exposure, runs `EXCLUDE`, and proves strict failure after deleting the exact local memory file.
+The fastest judge path is the repeatable Checkpoint 12 demo. It creates a fresh temporary project, registers the historical example evaluator through the generic command seam, shows a clean baseline, performs a controlled read of `checkout-17`, starts a new process to recall the exposure, runs `EXCLUDE`, and proves strict failure after deleting the exact local memory file.
 
 ```powershell
 $env:PYTHONPATH = "src"
@@ -59,13 +69,13 @@ Use `--repeat 3` to run the full repeatability proof. The command prints one JSO
 
 The current product surface is a local CLI. There is no frontend, hosted endpoint, or public demo URL.
 
-The repeatable demo is [demo/checkpoint12_demo.py](demo/checkpoint12_demo.py). The benchmark fixture is [examples/checkout-benchmark/fixture.json](examples/checkout-benchmark/fixture.json).
+The repeatable demo is [demo/checkpoint12_demo.py](demo/checkpoint12_demo.py). Its fixture data and example-only evaluator are [examples/checkout-benchmark/fixture.json](examples/checkout-benchmark/fixture.json) and [examples/checkout-benchmark/evaluator.py](examples/checkout-benchmark/evaluator.py).
 
 The continuous fresh-session video segment is deferred. It will be produced and published separately after the repository proof is stable.
 
 ## Prior Work
 
-Skepis builds on the installed Sibyl Memory client, using `MemoryClient.local` as its durable WARM and COLD boundary. The protected-read boundary, deterministic eligibility gate, fixture runner, deletion proof, and hardening tests are Skepis code in this repository. The repository's first public proof commit is `a094a91`.
+Skepis builds on the installed Sibyl Memory client, using `MemoryClient.local` as its durable WARM and COLD boundary. The protected-read boundary, deterministic eligibility gate, configured evaluator seam, deletion proof, and hardening tests are Skepis code in this repository. The fixture evaluator is kept for the historical demo and regression proof. The repository's first public proof commit is `a094a91`.
 
 No prior public Skepis release, deployment, external user study, Base integration, or Virtuals Protocol integration is claimed.
 
@@ -79,11 +89,11 @@ flowchart TB
     Warm --> Classify["EvaluationGate.classify"]
     Classify --> Policy["EvaluationGate.evaluate"]
     Policy --> Selected["Selected task IDs"]
-    Selected --> Fixture["Registered deterministic fixture"]
-    Fixture --> Score["Score selected cases and journal outcome"]
+    Selected --> Evaluator["CommandEvaluator"]
+    Evaluator --> Result["Structured result and journaled outcome"]
 ```
 
-Sibyl is authoritative for Skepis operational exposure state. The external read boundary is authoritative for the successful protected-file read. The fixture runner is authoritative for its deterministic task result. Model inference does not create hard exposure state.
+Sibyl is authoritative for Skepis operational exposure state. The external read boundary is authoritative for the successful protected-file read. The configured evaluator is authoritative for its own task results. Model inference does not create hard exposure state.
 
 ## Integration details
 
@@ -92,7 +102,8 @@ Sibyl is authoritative for Skepis operational exposure state. The external read 
 | Sibyl Memory | `MemoryClient.local` stores the scoped WARM entity and COLD events | Exposure survives process and session boundaries |
 | Python CLI | `skepis init`, `benchmark register`, `exposure status`, `exposure read`, and `eval run` | The proof is runnable without a web service |
 | Local protected-read boundary | Opens the registered in-root file before creating the objective signal | The positive exposure claim has a concrete read receipt |
-| Deterministic fixture runner | Scores only the task IDs returned by the policy gate | The evaluation consequence is observable and repeatable |
+| Configured evaluator seam | Hands a developer command only the task IDs returned by the policy gate and validates its structured result | Real evaluation logic stays with the developer's benchmark |
+| Historical fixture evaluator | Runs only in the example and regression proof | The old demo remains repeatable without defining normal registration |
 
 ## Proof map
 
@@ -102,7 +113,7 @@ Sibyl is authoritative for Skepis operational exposure state. The external read 
 | Sibyl writes survive the writer process | `src/skepis/capture/local_path.py:LocalPathCapture.observe` calls `MemoryClient.set_entity` and `MemoryClient.write_event` | `tests/test_capture.py:LocalPathCaptureTests.test_unique_mapping_writes_warm_and_cold` |
 | A fresh process recalls exposure | `src/skepis/policy/gate.py:EvaluationGate._load_tasks` reads `MemoryClient.get_entity` and scoped COLD events | `tests/test_end_to_end.py:EndToEndProofTests.test_exposure_changes_fresh_session_task_selection` |
 | Exposed tasks change the policy result | `src/skepis/policy/gate.py:EvaluationGate.evaluate` calls `_apply_policy` | `tests/test_policy.py:EvaluationGateTests.test_partitions_and_excludes_exposed_tasks` |
-| The evaluator runs only the selected tasks | `src/skepis/eval/runner.py:run_fixture` uses `decision.selected_tasks` and `_score_case` | `tests/test_integration_runner.py:EvaluationRunnerIntegrationTests.test_real_command_runs_only_policy_selected_tasks` |
+| The evaluator runs only the selected tasks | `src/skepis/eval/runner.py:run_evaluation` creates `EvaluationRequest` from `decision.selected_tasks`; `src/skepis/eval/evaluator.py:CommandEvaluator` validates the returned task IDs | `tests/test_generalized_evaluation.py:GeneralizedEvaluationTests.test_public_workflow_handles_unrelated_dynamic_benchmark_without_fixture` |
 | Removing Sibyl blocks a clean claim | `src/skepis/policy/gate.py:EvaluationGate._load_tasks` fails closed when WARM state is unavailable | `tests/test_deletion.py:DeletionProofTests.test_deleted_sibyl_state_fails_closed_in_fresh_session` |
 | Known failure modes remain conservative | `src/skepis/capture/local_path.py:LocalPathCapture.mark_observation_gap` and `src/skepis/policy/gate.py:EvaluationGate._read_scoped_observation_gap` preserve uncertainty | `tests/test_hardening.py:HardeningTests.test_partial_warm_cold_write_failure_blocks_clean_claim` and `tests/test_hardening.py:HardeningTests.test_concurrent_capture_preserves_both_exposures` |
 | The complete judge flow repeats without repair | `demo/checkpoint12_demo.py:_run_once` runs the fresh-project sequence | `tests/test_checkpoint12_demo.py:Checkpoint12DemoTests.test_demo_repeats_the_full_judge_proof_from_fresh_projects` |
@@ -111,7 +122,7 @@ Sibyl is authoritative for Skepis operational exposure state. The external read 
 
 - Write path: `LocalPathCapture.observe` writes the scoped `benchmark_exposure` entity with `MemoryClient.set_entity` and appends `benchmark_material_observed` with `MemoryClient.write_event`.
 - Read path: `EvaluationGate._load_tasks` reads the WARM entity with `MemoryClient.get_entity` and checks scoped COLD gaps with `MemoryClient.read_events`.
-- Decision path: `EvaluationGate.evaluate` applies `EXCLUDE`, `FLAG`, or `STRICT` through `_apply_policy` before `run_fixture` executes any task.
+- Decision path: `EvaluationGate.evaluate` applies `EXCLUDE`, `FLAG`, or `STRICT` through `_apply_policy` before `run_evaluation` invokes the configured evaluator.
 
 ## What's running
 
@@ -122,7 +133,7 @@ Sibyl is authoritative for Skepis operational exposure state. The external read 
 
 ## Evidence
 
-The current evidence was verified on 2026-08-30. The public proof baseline is commit `a094a91` (`Initial public Skepis proof`) on `main`.
+The current evidence was verified on 2026-09-01 in this working tree. The public proof baseline is commit `a094a91` (`Initial public Skepis proof`) on `main`.
 
 - `demo/checkpoint12_demo.py --repeat 3` completed three fresh temporary projects without repair.
 - Each repeat started with `checkout-16`, `checkout-17`, and `checkout-18` clean.
@@ -130,8 +141,9 @@ The current evidence was verified on 2026-08-30. The public proof baseline is co
 - Fresh Session B recalled only `checkout-17` as `EXPOSED`.
 - `EXCLUDE` evaluated only `checkout-16` and `checkout-18`, with score `1.0`.
 - Exact memory deletion followed by fresh `STRICT` evaluation returned `BLOCKED`, all tasks `UNKNOWN`, no selected or evaluated tasks, and `clean_claim_permitted: false`.
-- The configured WSL suite passed 58 tests with 0 skips.
-- The Windows suite passed 58 tests with 6 dependency-based skips because its interpreter cannot import the configured Sibyl client for fresh-process proofs.
+- The generalized proof registered a nine-task benchmark with semantic IDs, two protected-resource patterns, no fixture, and a developer evaluator command. A fresh process recalled one exposed task and the evaluator received the other eight under `EXCLUDE`.
+- The configured WSL suite passed 67 tests with 0 skips.
+- The Windows suite passed 67 tests with 7 dependency-based skips because its interpreter cannot import the configured Sibyl client for fresh-process proofs.
 - The release boundary was checked against the current [official hackathon rules](https://hack.sibyllabs.org/rules): public GitHub repository, OSI-approved license, real commit history, proof-mapped README, Prior Work declaration, fresh-session recall evidence, timestamp or commit evidence, and two public posts. The two posts remain intentionally unsubmitted.
 
 The complete automated demo assertion is [tests/test_checkpoint12_demo.py](tests/test_checkpoint12_demo.py). The broader source tests are in [tests](tests).
@@ -145,6 +157,7 @@ The complete automated demo assertion is [tests/test_checkpoint12_demo.py](tests
 | Missing or deleted Sibyl state | Fail closed | `UNKNOWN`, `BLOCKED` under `STRICT`, no clean claim |
 | Failed or ambiguous protected read | Avoid hard exposure and report uncertainty | Read rejected or `INCOMPLETE_MONITORING` gap recorded |
 | Missing observation reader or failed gate journal | Avoid a clean claim | Unknown state or unjournaled decision blocks the claim |
+| Evaluator returns an unauthorized or partial task set | Keep execution bound to policy selection | Run fails or remains incomplete, with no clean claim |
 | Generic Bash, scripts, MCP, or unsupported Codex routes | Avoid claiming coverage that was not observed | Remain outside the bounded adapter as `INCOMPLETE_MONITORING` |
 
 ## Repository structure
@@ -155,6 +168,7 @@ The complete automated demo assertion is [tests/test_checkpoint12_demo.py](tests
 │   └── checkpoint12_demo.py
 ├── examples/
 │   └── checkout-benchmark/
+│       ├── evaluator.py
 │       └── fixture.json
 ├── pyproject.toml
 ├── src/
@@ -191,13 +205,13 @@ python -m unittest discover -s tests -v
 python demo/checkpoint12_demo.py --repeat 3
 ```
 
-The deterministic demo needs the Sibyl Memory client declared in [pyproject.toml](pyproject.toml). The authenticated `sibyl` command is used for environment health checks and is not required to run the local fixture once the client is installed.
+The deterministic demo needs the Sibyl Memory client declared in [pyproject.toml](pyproject.toml). The authenticated `sibyl` command is used for environment health checks and is not required to run the local example evaluator once the client is installed.
 
 ## Limitations
 
 - The only proven hard-exposure route is the controlled `skepis exposure read` command.
 - Generic filesystem, Bash, script, MCP, and Codex activity is not objectively observed by this adapter and remains `INCOMPLETE_MONITORING`.
-- The runner is a deterministic fixture proof. It does not claim model scoring or Inspect AI integration.
+- The configured command seam does not supply model scoring or an Inspect AI integration. The example fixture evaluator is deterministic proof code only.
 - There is no frontend, hosted service, public demo URL, or demo video.
 - The verified environment is local. The local Sibyl store reports the FREE tier while the authenticated server reports a STAKE subscription. The local proof does not depend on upgrading the local tier.
 

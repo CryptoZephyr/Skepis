@@ -1,19 +1,22 @@
-"""Run one deterministic benchmark command through :class:`EvaluationGate`.
-
-The runner is intentionally small. It proves the integration boundary with a
-local fixture and exact output comparison. It does not claim to be a model
-runner or an Inspect AI adapter.
-"""
+"""Run a configured evaluator behind the Skepis policy gate."""
 
 from __future__ import annotations
 
 import argparse
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+from uuid import uuid4
 
 from skepis.policy import DecisionStatus, EvaluationGate, EvaluationPolicy
+
+from .evaluator import (
+    EvaluationRequest,
+    EvaluationResult,
+    EvaluatorCallable,
+    invoke_evaluator,
+)
+from .fixture import run_fixture
 
 
 DEFAULT_TENANT_ID = "00000000-0000-0000-0000-000000000001"
@@ -31,110 +34,117 @@ def _write_event(memory: Any, extra: Mapping[str, Any]) -> bool:
     return True
 
 
-def _load_fixture(fixture_path: str | Path) -> dict[str, Any]:
-    path = Path(fixture_path)
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(raw, dict):
-        raise ValueError("fixture root must be an object")
-
-    task_ids = raw.get("task_ids")
-    cases = raw.get("cases")
-    if not isinstance(task_ids, list) or not task_ids:
-        raise ValueError("fixture task_ids must be a non-empty list")
-    if not isinstance(cases, dict):
-        raise ValueError("fixture cases must be an object")
-    for task_id in task_ids:
-        if str(task_id) not in cases:
-            raise ValueError(f"fixture case missing for task {task_id}")
-        case = cases[str(task_id)]
-        if not isinstance(case, Mapping) or "expected" not in case or "candidate_output" not in case:
-            raise ValueError(f"fixture case must include expected and candidate_output for task {task_id}")
-    return raw
-
-
-def _score_case(case: Mapping[str, Any]) -> bool:
-    return case["candidate_output"] == case["expected"]
-
-
-def run_fixture(
-    fixture_path: str | Path,
+def run_evaluation(
     *,
+    evaluator: EvaluatorCallable,
     memory: Any,
-    policy: EvaluationPolicy | str | None = None,
+    task_ids: Iterable[str],
+    policy: EvaluationPolicy | str,
     tenant_id: str = DEFAULT_TENANT_ID,
-    evaluation_subject: str | None = None,
-    benchmark_id: str | None = None,
-    allowed_task_ids: Iterable[str],
+    evaluation_subject: str,
+    benchmark_id: str,
+    project_root: str | Path = ".",
+    run_id: str | None = None,
 ) -> tuple[dict[str, Any], int]:
-    """Run registered fixture cases and return the JSON result and exit code."""
+    """Apply policy, run the selected tasks, and return a structured result."""
 
-    fixture = _load_fixture(fixture_path)
-    if benchmark_id is not None and fixture.get("benchmark") != benchmark_id:
-        raise ValueError(
-            f"fixture benchmark {fixture.get('benchmark')!r} does not match configured benchmark {benchmark_id!r}"
-        )
-    if evaluation_subject is not None and fixture.get("evaluation_subject") != evaluation_subject:
-        raise ValueError(
-            "fixture evaluation subject "
-            f"{fixture.get('evaluation_subject')!r} does not match configured subject {evaluation_subject!r}"
-        )
-    resolved_subject = evaluation_subject or str(fixture["evaluation_subject"])
-    resolved_benchmark = benchmark_id or str(fixture["benchmark"])
-    resolved_policy = policy if policy is not None else str(fixture.get("policy", "exclude"))
-    requested_tasks = [str(task_id) for task_id in fixture["task_ids"]]
-    if allowed_task_ids is None:
-        raise ValueError("registered task allowlist is required")
-    allowed = {str(task_id) for task_id in allowed_task_ids}
-    unexpected = sorted(set(requested_tasks) - allowed)
-    if unexpected:
-        raise ValueError(
-            "fixture contains task ids not registered in the project: "
-            + ", ".join(unexpected)
-        )
+    requested_input = tuple(task_ids)
+    resolved_run_id = run_id or uuid4().hex
     gate = EvaluationGate(
         memory=memory,
         tenant_id=tenant_id,
-        evaluation_subject=resolved_subject,
-        benchmark_id=resolved_benchmark,
+        evaluation_subject=evaluation_subject,
+        benchmark_id=benchmark_id,
     )
-
+    resolved_tenant = gate.tenant_id
+    resolved_subject = gate.evaluation_subject
+    resolved_benchmark = gate.benchmark_id
+    resolved_policy = (
+        policy.value if isinstance(policy, EvaluationPolicy) else str(policy)
+    )
     started_journaled = _write_event(
         memory,
         {
             "event_type": "evaluation_started",
-            "tenant_id": tenant_id,
+            "run_id": resolved_run_id,
+            "tenant_id": resolved_tenant,
             "evaluation_subject": resolved_subject,
             "benchmark": resolved_benchmark,
-            "policy": str(resolved_policy),
-            "requested_tasks": sorted(set(requested_tasks)),
+            "policy": resolved_policy,
+            "requested_tasks": [str(task_id) for task_id in requested_input],
         },
     )
-    decision = gate.evaluate(requested_tasks, resolved_policy)
+    decision = gate.evaluate(requested_input, policy)
+    evaluator_result: EvaluationResult | None = None
+    evaluator_error: str | None = None
+    evaluator_error_type: str | None = None
+    evaluation_failed_journaled = False
+    evaluation_complete = not decision.selected_tasks and decision.status != DecisionStatus.BLOCKED
+    evaluated_tasks: list[str] = []
 
-    cases = fixture["cases"]
-    scores: dict[str, bool] = {}
-    for task_id in decision.selected_tasks:
-        scores[task_id] = _score_case(cases[task_id])
+    if decision.selected_tasks:
+        request = EvaluationRequest(
+            benchmark_id=resolved_benchmark,
+            evaluation_subject=resolved_subject,
+            policy=decision.policy,
+            task_ids=decision.selected_tasks,
+            project_root=Path(project_root).expanduser().resolve(strict=False),
+            run_id=resolved_run_id,
+        )
+        try:
+            evaluator_result = invoke_evaluator(evaluator, request)
+        except Exception as exc:
+            evaluator_error = str(exc) or type(exc).__name__
+            evaluator_error_type = type(exc).__name__
+            evaluation_failed_journaled = _write_event(
+                memory,
+                {
+                    "event_type": "evaluation_failed",
+                    "run_id": resolved_run_id,
+                    "tenant_id": resolved_tenant,
+                    "evaluation_subject": resolved_subject,
+                    "benchmark": resolved_benchmark,
+                    "policy": decision.policy.value,
+                    "selected_tasks": list(decision.selected_tasks),
+                    "error": evaluator_error,
+                },
+            )
+        else:
+            evaluated_tasks = list(evaluator_result.evaluated_tasks)
+            evaluation_complete = set(evaluated_tasks) == set(decision.selected_tasks)
 
-    evaluated_tasks = list(decision.selected_tasks)
-    score = (sum(scores.values()) / len(scores)) if scores else None
-    completed_journaled = _write_event(
-        memory,
-        {
-            "event_type": "evaluation_completed",
-            "tenant_id": tenant_id,
-            "evaluation_subject": resolved_subject,
-            "benchmark": resolved_benchmark,
-            "policy": decision.policy.value,
-            "status": decision.status.value,
-            "evaluated_tasks": evaluated_tasks,
-            "scores": scores,
-            "score": score,
-            "clean_claim_permitted": decision.clean_claim_permitted,
-        },
-    )
+    if evaluator_error is not None:
+        status = "EVALUATOR_FAILED"
+        reason = f"evaluator_failed:{evaluator_error_type}"
+        clean_claim_permitted = False
+        completed_journaled = False
+    else:
+        status = decision.status.value
+        reason = decision.reason
+        clean_claim_permitted = decision.clean_claim_permitted and evaluation_complete
+        if decision.selected_tasks and not evaluation_complete:
+            reason = "evaluator_did_not_evaluate_all_selected_tasks"
+        completed_journaled = _write_event(
+            memory,
+            {
+                "event_type": "evaluation_completed",
+                "run_id": resolved_run_id,
+                "tenant_id": resolved_tenant,
+                "evaluation_subject": resolved_subject,
+                "benchmark": resolved_benchmark,
+                "policy": decision.policy.value,
+                "status": decision.status.value,
+                "evaluated_tasks": evaluated_tasks,
+                "evaluation_result": (
+                    evaluator_result.as_dict() if evaluator_result is not None else None
+                ),
+                "evaluation_complete": evaluation_complete,
+                "clean_claim_permitted": clean_claim_permitted,
+            },
+        )
 
     result = {
+        "run_id": resolved_run_id,
         "benchmark": resolved_benchmark,
         "evaluation_subject": resolved_subject,
         "policy": decision.policy.value,
@@ -145,29 +155,41 @@ def run_fixture(
         "selected_tasks": list(decision.selected_tasks),
         "excluded_tasks": list(decision.excluded_tasks),
         "flagged_tasks": list(decision.flagged_tasks),
-        "status": decision.status.value,
+        "status": status,
         "memory_available": decision.memory_available,
         "state_available": decision.state_available,
-        "clean_claim_permitted": decision.clean_claim_permitted,
-        "reason": decision.reason,
+        "clean_claim_permitted": clean_claim_permitted,
+        "reason": reason,
         "evaluated_tasks": evaluated_tasks,
-        "scores": scores,
-        "score": score,
+        "evaluation_result": evaluator_result.as_dict() if evaluator_result is not None else None,
+        "metrics": dict(evaluator_result.metrics) if evaluator_result is not None else {},
+        "score": evaluator_result.score if evaluator_result is not None else None,
+        "evaluation_complete": evaluation_complete and evaluator_error is None,
+        "evaluation_error": evaluator_error,
         "evaluation_started_journaled": started_journaled,
         "gate_decision_journaled": decision.journaled,
         "evaluation_completed_journaled": completed_journaled,
+        "evaluation_failed_journaled": evaluation_failed_journaled,
         "journaled": started_journaled and decision.journaled and completed_journaled,
     }
-    exit_code = 2 if decision.status == DecisionStatus.BLOCKED else 0
+    if evaluator_error is not None:
+        exit_code = 1
+    elif decision.status == DecisionStatus.BLOCKED:
+        exit_code = 2
+    elif not result["evaluation_complete"]:
+        exit_code = 1
+    else:
+        exit_code = 0
     return result, exit_code
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run the registered project fixture through the Skepis evaluation gate"
+        description="Run the configured evaluator through the Skepis policy gate"
     )
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--policy", choices=[policy.value for policy in EvaluationPolicy])
+    parser.add_argument("--task", dest="task_ids", action="append", default=[])
     return parser
 
 
@@ -178,6 +200,8 @@ def main(argv: list[str] | None = None) -> int:
     cli_args = ["eval", "run", "--config", str(args.config), "--json"]
     if args.policy is not None:
         cli_args.extend(["--policy", args.policy])
+    for task_id in args.task_ids:
+        cli_args.extend(["--task", task_id])
     return cli_main(cli_args)
 
 

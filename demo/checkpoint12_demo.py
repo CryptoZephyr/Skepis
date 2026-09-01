@@ -14,6 +14,7 @@ from typing import Any, Iterable
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_SOURCE = REPO_ROOT / "examples" / "checkout-benchmark" / "fixture.json"
+EVALUATOR_SOURCE = REPO_ROOT / "examples" / "checkout-benchmark" / "evaluator.py"
 TENANT_ID = "00000000-0000-0000-0000-000000000001"
 BENCHMARK_ID = "checkout-benchmark"
 EVALUATION_SUBJECT = "checkout-agent"
@@ -70,7 +71,7 @@ def _run_cli(
         ) from exc
 
 
-def _run_setup_command(project: Path, config_path: Path, fixture_path: Path) -> None:
+def _run_setup_command(project: Path, config_path: Path) -> None:
     init = subprocess.run(
         [
             sys.executable,
@@ -110,8 +111,6 @@ def _run_setup_command(project: Path, config_path: Path, fixture_path: Path) -> 
             BENCHMARK_ID,
             "--evaluation-subject",
             EVALUATION_SUBJECT,
-            "--fixture",
-            str(fixture_path),
             "--task",
             TASK_IDS[0],
             "--task",
@@ -120,6 +119,8 @@ def _run_setup_command(project: Path, config_path: Path, fixture_path: Path) -> 
             TASK_IDS[2],
             "--protected",
             f"checkout-17={PROTECTED_PATH}",
+            "--evaluator-command",
+            f"{sys.executable} evaluator.py",
         ],
         cwd=REPO_ROOT,
         env=_environment(),
@@ -201,11 +202,13 @@ def _run_once(repeat: int) -> None:
         config_path = project / "skepis.toml"
         fixture_path = project / "fixture.json"
         fixture_path.write_text(FIXTURE_SOURCE.read_text(encoding="utf-8"), encoding="utf-8")
+        evaluator_path = project / "evaluator.py"
+        evaluator_path.write_text(EVALUATOR_SOURCE.read_text(encoding="utf-8"), encoding="utf-8")
         protected_path = project / PROTECTED_PATH
         protected_path.parent.mkdir(parents=True)
         protected_path.write_text("opaque protected checkout-17 material", encoding="utf-8")
 
-        _run_setup_command(project, config_path, fixture_path)
+        _run_setup_command(project, config_path)
         database_path = project / ".skepis" / "memory.db"
         _seed_clean_state(database_path)
 
@@ -303,14 +306,14 @@ def _run_once(repeat: int) -> None:
             selected_tasks=evaluation["selected_tasks"],
             excluded_tasks=evaluation["excluded_tasks"],
             evaluated_tasks=evaluation["evaluated_tasks"],
-            scores=evaluation["scores"],
+            scores=evaluation["evaluation_result"]["scores"],
             score=evaluation["score"],
             status=evaluation["status"],
             clean_claim_permitted=evaluation["clean_claim_permitted"],
             process_pid=evaluation_pid,
             process_boundary="fresh skepis evaluation subprocess",
             exact_policy_decision_path="EvaluationGate.evaluate -> _apply_policy",
-            exact_evaluation_filter_path="run_fixture -> decision.selected_tasks -> _score_case",
+            exact_evaluation_filter_path="CommandEvaluator -> evaluator.py -> request.task_ids",
         )
 
         deleted_paths = _delete_memory(database_path)

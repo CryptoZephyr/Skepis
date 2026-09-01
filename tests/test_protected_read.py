@@ -318,6 +318,10 @@ class ProtectedReadBoundaryTests(unittest.TestCase):
                 protected_paths={
                     "checkout-17": ["evals/checkout-17/solution.patch"]
                 },
+                evaluator_command=(
+                    sys.executable,
+                    str(Path(__file__).parents[1] / "examples" / "checkout-benchmark" / "evaluator.py"),
+                ),
             )
             protected = root / "evals/checkout-17/solution.patch"
             protected.parent.mkdir(parents=True)
@@ -436,7 +440,7 @@ class ProtectedReadBoundaryTests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(rejected.returncode, 2)
-            self.assertIn("not registered in the project", rejected.stderr)
+            self.assertIn("unrecognized arguments: --fixture", rejected.stderr)
 
 
 if __name__ == "__main__":

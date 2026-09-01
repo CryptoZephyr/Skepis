@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
+import shlex
 import sys
 import uuid
 from typing import Any
@@ -26,7 +28,7 @@ from skepis.capture import (
     ProtectedReadError,
     ProtectedResource,
 )
-from skepis.eval.runner import run_fixture
+from skepis.eval import CommandEvaluator, EvaluatorError, run_evaluation
 from skepis.policy import EvaluationGate
 
 
@@ -47,7 +49,18 @@ def _parser() -> argparse.ArgumentParser:
     register.add_argument("--config", help="config path, default: skepis.toml")
     register.add_argument("--id", dest="benchmark_id")
     register.add_argument("--evaluation-subject")
-    register.add_argument("--fixture")
+    register.add_argument(
+        "--fixture",
+        help="optional deterministic fixture metadata for tests or demos",
+    )
+    register.add_argument(
+        "--evaluator-command",
+        "--evaluator",
+        dest="evaluator_command",
+        help="developer evaluator command; it receives SKEPIS_TASK_IDS and SKEPIS_EVALUATION_REQUEST",
+    )
+    register.add_argument("--evaluator-working-directory")
+    register.add_argument("--evaluator-timeout", type=float, default=300.0)
     register.add_argument("--task", dest="task_ids", action="append", default=[])
     register.add_argument(
         "--protected",
@@ -77,9 +90,9 @@ def _parser() -> argparse.ArgumentParser:
 
     evaluation = commands.add_parser("eval", help="run a policy-gated evaluation")
     evaluation_commands = evaluation.add_subparsers(dest="evaluation_command", required=True)
-    run = evaluation_commands.add_parser("run", help="run the configured fixture through the policy gate")
+    run = evaluation_commands.add_parser("run", help="run the configured evaluator through the policy gate")
     run.add_argument("--config", help="config path, default: skepis.toml")
-    run.add_argument("--fixture", help="optional fixture override")
+    run.add_argument("--task", dest="task_ids", action="append", default=[])
     run.add_argument("--policy", help="exclude, flag, or strict")
     run.add_argument("--json", action="store_true", dest="as_json")
     return parser
@@ -147,6 +160,13 @@ def _cmd_register(args: argparse.Namespace) -> int:
         fixture=args.fixture,
         task_ids=args.task_ids,
         protected_paths=_parse_protected(args.protected),
+        evaluator_command=(
+            _parse_evaluator_command(args.evaluator_command)
+            if args.evaluator_command
+            else None
+        ),
+        evaluator_working_directory=args.evaluator_working_directory,
+        evaluator_timeout_seconds=args.evaluator_timeout,
     )
     benchmark = require_benchmark(config)
     print(f"Registered benchmark: {benchmark.id}")
@@ -250,45 +270,66 @@ def _cmd_eval_run(args: argparse.Namespace) -> int:
     config = load_config(resolve_config_path(args.config), require_benchmark=True)
     benchmark = require_benchmark(config)
     policy = parse_policy(args.policy or config.default_policy)
-    fixture = (
-        _resolve_fixture(args.fixture, config.project_root)
-        if args.fixture
-        else benchmark.fixture
-    )
-    if not fixture.is_file():
-        raise ConfigError(f"missing fixture: {fixture}")
-    memory = _open_memory(config.memory_db)
+    if benchmark.evaluator is None:
+        raise ConfigError("missing evaluator command in benchmark config")
+    task_ids = _selected_tasks(args.task_ids, benchmark.task_ids)
     try:
-        result, exit_code = run_fixture(
-            fixture,
+        evaluator = CommandEvaluator(
+            benchmark.evaluator.command,
+            project_root=config.project_root,
+            working_directory=benchmark.evaluator.working_directory,
+            timeout_seconds=benchmark.evaluator.timeout_seconds,
+        )
+        memory = _open_memory(config.memory_db)
+        result, exit_code = run_evaluation(
+            evaluator=evaluator,
             memory=memory,
             policy=policy.value,
             tenant_id=config.tenant_id,
             evaluation_subject=benchmark.evaluation_subject,
             benchmark_id=benchmark.id,
-            allowed_task_ids=benchmark.task_ids,
+            task_ids=task_ids,
+            project_root=config.project_root,
         )
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise ConfigError(f"invalid fixture: {exc}") from exc
+    except (EvaluatorError, TypeError, ValueError) as exc:
+        raise ConfigError(f"invalid evaluator configuration: {exc}") from exc
     if args.as_json:
         print(json.dumps(result, sort_keys=True))
     else:
         _print_partitions(result, include_selection=True)
+        print(f"EVALUATED: {_display_tasks(result['evaluated_tasks'])}")
         print(f"SCORE: {result['score']}")
+        print(f"EVALUATION_COMPLETE: {str(result['evaluation_complete']).lower()}")
         print(f"CLEAN_CLAIM_PERMITTED: {str(result['clean_claim_permitted']).lower()}")
     return exit_code
 
 
-def _resolve_fixture(value: str, project_root: Path) -> Path:
-    fixture = Path(value).expanduser()
-    if not fixture.is_absolute():
-        fixture = project_root / fixture
-    fixture = fixture.resolve(strict=False)
+def _parse_evaluator_command(value: str) -> tuple[str, ...]:
+    raw = value.strip()
+    if not raw:
+        raise ConfigError("evaluator command cannot be empty")
+    if raw.startswith("["):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ConfigError(f"malformed evaluator command JSON: {exc}") from exc
+        if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
+            raise ConfigError("evaluator command JSON must be an array of strings")
+        return tuple(parsed)
     try:
-        fixture.relative_to(project_root.resolve(strict=False))
+        parts = shlex.split(raw, posix=os.name != "nt")
     except ValueError as exc:
-        raise ConfigError(f"fixture must be inside the project root: {fixture}") from exc
-    return fixture
+        raise ConfigError(f"malformed evaluator command: {exc}") from exc
+    if os.name == "nt":
+        parts = [
+            part[1:-1]
+            if len(part) >= 2 and part[0] == part[-1] and part[0] in {"'", '"'}
+            else part
+            for part in parts
+        ]
+    if not parts:
+        raise ConfigError("evaluator command cannot be empty")
+    return tuple(parts)
 
 
 def _print_partitions(result: dict[str, Any], *, include_selection: bool) -> None:

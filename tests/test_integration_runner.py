@@ -21,7 +21,7 @@ class EvaluationRunnerIntegrationTests(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit) as raised:
                 _parser().parse_args(
-                    ["--fixture", "fixture.json", "--memory-db", "memory.db"]
+                    ["--fixture", "fixture.json", "--config", "skepis.toml"]
                 )
 
         self.assertEqual(raised.exception.code, 2)
@@ -45,6 +45,11 @@ class EvaluationRunnerIntegrationTests(unittest.TestCase):
             protected.write_text("opaque fixture", encoding="utf-8")
             fixture_copy = project / "fixture.json"
             fixture_copy.write_text(fixture_path.read_text(encoding="utf-8"), encoding="utf-8")
+            evaluator_copy = project / "evaluator.py"
+            evaluator_copy.write_text(
+                (fixture_path.parent / "evaluator.py").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
             config_path = project / "skepis.toml"
             initialize_config(
                 config_path,
@@ -59,6 +64,7 @@ class EvaluationRunnerIntegrationTests(unittest.TestCase):
                 fixture=fixture_copy,
                 task_ids=fixture["task_ids"],
                 protected_paths=fixture["protected_paths"],
+                evaluator_command=(sys.executable, "evaluator.py"),
             )
             db = project / ".skepis/memory.db"
 
@@ -149,14 +155,17 @@ print(json.dumps({"outcome": result.outcome.value, "task": result.task_key}))
             self.assertEqual(result["status"], "EXCLUDED")
             self.assertTrue(result["clean_claim_permitted"])
             self.assertEqual(result["evaluated_tasks"], ["checkout-16", "checkout-18"])
-            self.assertEqual(result["scores"], {"checkout-16": True, "checkout-18": True})
-            self.assertEqual(result["score"], 1.0)
+            self.assertEqual(
+                result["evaluation_result"]["scores"],
+                {"checkout-16": True, "checkout-18": True},
+            )
+            self.assertEqual(result["evaluation_result"]["score"], 1.0)
             self.assertTrue(result["evaluation_started_journaled"])
             self.assertTrue(result["gate_decision_journaled"])
             self.assertTrue(result["evaluation_completed_journaled"])
             self.assertTrue(result["journaled"])
             self.assertNotIn("checkout-17", result["evaluated_tasks"])
-            self.assertNotIn("checkout-17", result["scores"])
+            self.assertNotIn("checkout-17", result["evaluation_result"]["scores"])
 
             for database_path in db.parent.glob("memory.db*"):
                 database_path.unlink()

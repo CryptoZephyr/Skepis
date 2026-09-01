@@ -22,6 +22,8 @@ def write_fixture(root: Path) -> Path:
     source = Path(__file__).parents[1] / "examples" / "checkout-benchmark" / "fixture.json"
     fixture = root / "fixture.json"
     shutil.copyfile(source, fixture)
+    evaluator_source = Path(__file__).parents[1] / "examples" / "checkout-benchmark" / "evaluator.py"
+    shutil.copyfile(evaluator_source, root / "evaluator.py")
     return fixture
 
 
@@ -49,6 +51,7 @@ def register_checkout(config_path: Path, fixture: Path) -> None:
                 "evals/checkout-17/solution.patch",
             ]
         },
+        evaluator_command=(sys.executable, "evaluator.py"),
     )
 
 
@@ -274,6 +277,8 @@ class CliProofTests(unittest.TestCase):
                 "checkout-17=evals/checkout-17/hidden/**",
                 "--protected",
                 "checkout-17=evals/checkout-17/solution.patch",
+                "--evaluator-command",
+                f"{sys.executable} evaluator.py",
             ])
             self.assertEqual(register.returncode, 0, register.stderr)
             config = tomllib.loads(config_path.read_text(encoding="utf-8"))
