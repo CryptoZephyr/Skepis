@@ -1,0 +1,49 @@
+{
+  "name": "skepis",
+  "version": "0.1.3",
+  "description": "Thin npm launcher for the local-first Skepis evaluation tool",
+  "license": "MIT",
+  "private": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "skepis": "npm/skepis.js",
+    "skepis-mcp": "npm/skepis-mcp.js"
+  },
+  "files": [
+    "LICENSE",
+    "README.md",
+    "npm",
+    "pyproject.toml",
+    "src/skepis/*.py",
+    "src/skepis/capture/*.py",
+    "src/skepis/eval/*.py",
+    "src/skepis/policy/*.py"
+  ],
+  "keywords": [
+    "evaluation",
+    "benchmark",
+    "mcp",
+    "agent"
+  ],
+  "main": "index.js",
+  "directories": {
+    "example": "examples",
+    "lib": "lib",
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CryptoZephyr/Skepis.git"
+  },
+  "author": "",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/CryptoZephyr/Skepis/issues"
+  },
+  "homepage": "https://github.com/CryptoZephyr/Skepis#readme"
+}

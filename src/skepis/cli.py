@@ -29,6 +29,7 @@ from skepis.capture import (
     ProtectedResource,
 )
 from skepis.eval import CommandEvaluator, EvaluatorError, run_evaluation
+from skepis.integration import connect_project
 from skepis.policy import EvaluationGate
 from skepis.report import (
     ReportError,
@@ -43,12 +44,49 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="skepis", description="Local-first exposure-aware evaluation tooling")
     commands = parser.add_subparsers(dest="command", required=True)
 
-    init = commands.add_parser("init", help="initialize a project config")
+    init = commands.add_parser("init", help="set up a project for Skepis")
     init.add_argument("--root", default=".", help="project root, default: current directory")
     init.add_argument("--config", help="config path, default: skepis.toml under the project root")
     init.add_argument("--tenant-id", help="explicit local or Sibyl tenant scope")
     init.add_argument("--memory-db", default=DEFAULT_MEMORY_DB)
-    init.add_argument("--policy", default="exclude")
+    init.add_argument("--policy", help="advanced policy override: exclude, flag, or strict")
+    init.add_argument("--benchmark-id", "--benchmark", dest="benchmark_id")
+    init.add_argument("--evaluation-subject", "--agent", dest="evaluation_subject")
+    init.add_argument(
+        "--fixture",
+        help="optional benchmark metadata file; task metadata is discovered when reliable",
+    )
+    init.add_argument("--evaluator-command", "--evaluator", dest="evaluator_command")
+    init.add_argument("--evaluator-working-directory")
+    init.add_argument("--evaluator-timeout", type=float, default=300.0)
+    init.add_argument("--task", dest="task_ids", action="append", default=[])
+    init.add_argument(
+        "--protected",
+        dest="protected",
+        action="append",
+        default=[],
+        metavar="TASK=PATH",
+    )
+    init.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="require all setup values from flags instead of prompting",
+    )
+    init.add_argument("--json", action="store_true", dest="as_json")
+
+    connect = commands.add_parser(
+        "connect",
+        help="connect the existing Skepis MCP server to a project coding agent",
+    )
+    connect.add_argument("--root", default=".", help="project root, default: current directory")
+    connect.add_argument("--config", help="config path, default: skepis.toml under the project root")
+    connect.add_argument(
+        "--client",
+        choices=("auto", "claude", "cursor"),
+        default="auto",
+        help="client to configure, default: detect Claude Code or Cursor",
+    )
+    connect.add_argument("--json", action="store_true", dest="as_json")
 
     benchmark = commands.add_parser("benchmark", help="manage benchmark registration")
     benchmark_commands = benchmark.add_subparsers(dest="benchmark_command", required=True)
@@ -95,9 +133,22 @@ def _parser() -> argparse.ArgumentParser:
     protected_read.add_argument("--encoding", default="utf-8")
     protected_read.add_argument("--json", action="store_true", dest="as_json")
 
+    inspect = commands.add_parser(
+        "inspect",
+        help="explain exposed or uncertain tasks when a review is needed",
+    )
+    inspect.add_argument("--config", help="config path, default: skepis.toml")
+    inspect.add_argument("--task", dest="task_ids", action="append", default=[])
+    inspect.add_argument("--json", action="store_true", dest="as_json")
+
     evaluation = commands.add_parser("eval", help="run a policy-gated evaluation")
-    evaluation_commands = evaluation.add_subparsers(dest="evaluation_command", required=True)
-    run = evaluation_commands.add_parser("run", help="run the configured evaluator through the policy gate")
+    evaluation.add_argument(
+        "evaluation_action",
+        nargs="?",
+        choices=("run",),
+        help="optional legacy spelling: `skepis eval run`",
+    )
+    run = evaluation
     run.add_argument("--config", help="config path, default: skepis.toml")
     run.add_argument("--task", dest="task_ids", action="append", default=[])
     run.add_argument("--policy", help="exclude, flag, or strict")
@@ -145,20 +196,230 @@ def _make_capture(config: Any, benchmark: Any, memory: Any) -> LocalPathCapture:
 def _cmd_init(args: argparse.Namespace) -> int:
     root = Path(args.root).expanduser().resolve(strict=False)
     config_path = resolve_config_path(args.config, base=root)
-    tenant_id = args.tenant_id or str(uuid.uuid4())
-    config = initialize_config(
-        config_path,
-        project_root=root,
-        tenant_id=tenant_id,
-        memory_db=args.memory_db,
-        default_policy=args.policy,
+    setup_values = (
+        args.benchmark_id,
+        args.evaluation_subject,
+        args.fixture,
+        args.evaluator_command,
+        args.evaluator_working_directory,
+        args.task_ids,
+        args.protected,
     )
-    _open_memory(config.memory_db)
-    print("Initialized Skepis project")
-    print(f"CONFIG: {config.config_path}")
-    print(f"MEMORY_DB: {config.memory_db}")
-    print(f"TENANT_ID: {config.tenant_id}")
+    interactive = not args.non_interactive and sys.stdin.isatty()
+
+    if config_path.exists():
+        config = load_config(config_path)
+        if config.benchmark is not None:
+            if any(value for value in setup_values):
+                raise ConfigError(
+                    f"benchmark already registered: {config.benchmark.id}. "
+                    "Run init without benchmark options to review readiness."
+                )
+            _ensure_memory_available(config)
+            _print_ready_summary(config, args.as_json)
+            return 0
+    else:
+        config = None
+
+    fixture_path = _resolve_optional_path(args.fixture, root)
+    fixture_metadata = _load_fixture_metadata(fixture_path) if fixture_path else {}
+
+    if config is None and not interactive and not any(setup_values):
+        config = initialize_config(
+            config_path,
+            project_root=root,
+            tenant_id=args.tenant_id or str(uuid.uuid4()),
+            memory_db=args.memory_db,
+            default_policy=args.policy or "exclude",
+        )
+        _ensure_memory_available(config)
+        if args.as_json:
+            print(json.dumps({
+                "status": "INITIALIZED",
+                "config": str(config.config_path),
+                "memory_db": str(config.memory_db),
+                "tenant_id": config.tenant_id,
+                "next": "skepis init --benchmark-id ...",
+            }, sort_keys=True))
+        else:
+            print("Initialized Skepis project")
+            print(f"CONFIG: {config.config_path}")
+            print(f"MEMORY_DB: {config.memory_db}")
+            print(f"TENANT_ID: {config.tenant_id}")
+            print("Next: skepis init --benchmark-id ...")
+        return 0
+
+    benchmark_id = args.benchmark_id or fixture_metadata.get("benchmark")
+    if not benchmark_id and interactive:
+        benchmark_id = _prompt_init_value("Benchmark ID")
+    evaluation_subject = args.evaluation_subject or fixture_metadata.get("evaluation_subject")
+    if not evaluation_subject and interactive:
+        evaluation_subject = _prompt_init_value("Agent or evaluation subject")
+
+    task_ids = list(args.task_ids)
+    if not task_ids:
+        discovered_tasks = fixture_metadata.get("task_ids")
+        if isinstance(discovered_tasks, list):
+            task_ids = [str(task_id).strip() for task_id in discovered_tasks if str(task_id).strip()]
+    if not task_ids and interactive:
+        task_ids = _prompt_task_ids()
+
+    if args.protected:
+        protected_paths = _parse_protected(args.protected)
+    else:
+        discovered_protected = fixture_metadata.get("protected_paths")
+        protected_paths = (
+            {
+                str(task_id): [str(pattern) for pattern in patterns]
+                for task_id, patterns in discovered_protected.items()
+                if isinstance(patterns, list)
+            }
+            if isinstance(discovered_protected, dict)
+            else {}
+        )
+        if not protected_paths and interactive:
+            protected_paths = _prompt_protected_paths()
+
+    evaluator_command_text = args.evaluator_command
+    if not evaluator_command_text and interactive:
+        evaluator_command_text = _prompt_init_value("Evaluator command")
+    if not benchmark_id:
+        raise ConfigError("missing benchmark id; pass --benchmark-id or run init in a terminal")
+    if not evaluation_subject:
+        raise ConfigError(
+            "missing evaluation subject; pass --evaluation-subject or run init in a terminal"
+        )
+    if not task_ids:
+        raise ConfigError("missing task ids; pass one or more --task values")
+    if not evaluator_command_text:
+        raise ConfigError(
+            "missing evaluator command; pass --evaluator-command or run init in a terminal"
+        )
+
+    if config is None:
+        config = initialize_config(
+            config_path,
+            project_root=root,
+            tenant_id=args.tenant_id or str(uuid.uuid4()),
+            memory_db=args.memory_db,
+            default_policy=args.policy or "exclude",
+        )
+    elif args.policy is not None and parse_policy(args.policy) != config.default_policy:
+        raise ConfigError(
+            "the existing project policy is explicit; change it in project configuration"
+        )
+
+    config = register_benchmark(
+        config.config_path,
+        benchmark_id=benchmark_id,
+        evaluation_subject=evaluation_subject,
+        fixture=fixture_path,
+        task_ids=task_ids,
+        protected_paths=protected_paths,
+        evaluator_command=_parse_evaluator_command(evaluator_command_text),
+        evaluator_working_directory=args.evaluator_working_directory,
+        evaluator_timeout_seconds=args.evaluator_timeout,
+    )
+    _ensure_memory_available(config)
+    _print_ready_summary(config, args.as_json)
     return 0
+
+
+def _resolve_optional_path(value: str | Path | None, base: Path) -> Path | None:
+    if value is None:
+        return None
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = base / path
+    return path.resolve(strict=False)
+
+
+def _load_fixture_metadata(path: Path | None) -> dict[str, Any]:
+    if path is None:
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        raise ConfigError(f"could not read benchmark metadata {path}: {type(exc).__name__}") from exc
+    except json.JSONDecodeError:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _prompt_init_value(label: str) -> str:
+    try:
+        value = input(f"{label}: ").strip()
+    except EOFError as exc:
+        raise ConfigError(f"missing {label.lower()}") from exc
+    if not value:
+        raise ConfigError(f"missing {label.lower()}")
+    return value
+
+
+def _prompt_task_ids() -> list[str]:
+    value = _prompt_init_value("Task IDs, comma-separated")
+    task_ids = [item.strip() for item in value.split(",") if item.strip()]
+    if not task_ids:
+        raise ConfigError("missing task ids")
+    return task_ids
+
+
+def _prompt_protected_paths() -> dict[str, list[str]]:
+    print("Protected resource mappings use TASK=PROJECT_RELATIVE_PATH. Leave blank when done.")
+    values: list[str] = []
+    while True:
+        try:
+            value = input("Protected resource: ").strip()
+        except EOFError:
+            break
+        if not value:
+            break
+        values.append(value)
+    return _parse_protected(values)
+
+
+def _ensure_memory_available(config: Any) -> None:
+    try:
+        _open_memory(config.memory_db)
+    except Exception as exc:
+        raise ConfigError(
+            f"Sibyl memory unavailable: {type(exc).__name__}. Install the Python dependencies and retry."
+        ) from exc
+
+
+def _ready_summary(config: Any) -> dict[str, Any]:
+    benchmark = require_benchmark(config)
+    pattern_count = sum(len(patterns) for patterns in benchmark.protected_paths.values())
+    return {
+        "status": "READY",
+        "benchmark": benchmark.id,
+        "agent": benchmark.evaluation_subject,
+        "tasks": len(benchmark.task_ids),
+        "protected_resources": pattern_count,
+        "policy": config.default_policy.value.upper(),
+        "memory": "available",
+        "next": "skepis connect",
+        "config": str(config.config_path),
+    }
+
+
+def _print_ready_summary(config: Any, as_json: bool) -> None:
+    summary = _ready_summary(config)
+    if as_json:
+        print(json.dumps(summary, sort_keys=True))
+        return
+    print("Skepis ready.")
+    print()
+    print(f"Benchmark: {summary['benchmark']}")
+    print(f"Agent: {summary['agent']}")
+    print(f"Tasks: {summary['tasks']}")
+    print(f"Protected resources: {summary['protected_resources']} patterns")
+    print(f"Policy: {summary['policy']}")
+    print(f"Memory: {summary['memory']}")
+    print()
+    print(f"Next: {summary['next']}")
 
 
 def _parse_protected(values: list[str]) -> dict[str, list[str]]:
@@ -247,6 +508,125 @@ def _cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_connect(args: argparse.Namespace) -> int:
+    root = Path(args.root).expanduser().resolve(strict=False)
+    config = load_config(resolve_config_path(args.config, base=root), require_benchmark=True)
+    result = connect_project(
+        config.project_root,
+        config.config_path,
+        requested_client=args.client,
+    )
+    result.update(
+        {
+            "project": str(config.project_root),
+            "benchmark": require_benchmark(config).id,
+            "agent": require_benchmark(config).evaluation_subject,
+        }
+    )
+    if args.as_json:
+        print(json.dumps(result, sort_keys=True))
+    else:
+        _print_connect_result(result)
+    return 0 if result["status"] == "CONNECTED" else 2
+
+
+def _print_connect_result(result: dict[str, Any]) -> None:
+    if result["status"] == "NO_CLIENT":
+        print("No supported MCP client detected.")
+        print()
+        print("Skepis MCP is ready for manual configuration.")
+        print("Supported project clients: Claude Code and Cursor.")
+        print()
+        print("Add this server entry to the client's project MCP config:")
+        print(json.dumps(result["manual_configuration"], indent=2, sort_keys=True))
+        return
+    if result["status"] == "FAILED":
+        print(f"Detected: {', '.join(result['detected'])}")
+        print(f"Project: {result['project']}")
+        print()
+        print("Skepis MCP connection could not be verified.")
+        print(f"Reason: {result['reason']}")
+        print("Check the client configuration and run skepis connect again.")
+        return
+
+    print(f"Detected: {', '.join(result['detected'])}")
+    print(f"Project: {result['project']}")
+    print()
+    for client in result["configured"]:
+        print(f"✓ Skepis MCP configured for {client['label']}")
+        print(f"✓ Connection verified, {len(client['tools'])} tools available")
+    print()
+    print("Skepis is connected.")
+    print("Continue using your coding agent normally.")
+
+
+def _cmd_inspect(args: argparse.Namespace) -> int:
+    from skepis.mcp import inspect as inspect_workflow
+
+    config_path = resolve_config_path(args.config)
+    try:
+        result = inspect_workflow(config_path, args.task_ids or None)
+    except (ImportError, ModuleNotFoundError) as exc:
+        raise ConfigError(
+            "Sibyl memory is unavailable. Install the Python dependencies and retry."
+        ) from exc
+    if args.as_json:
+        print(json.dumps(result, sort_keys=True))
+    else:
+        _print_human_inspection(result)
+    return 0
+
+
+def _print_human_inspection(result: dict[str, Any]) -> None:
+    eligibility = result["eligibility"]
+    provenance = result["provenance"]
+    exposed = set(eligibility["exposed_tasks"])
+    unknown = set(eligibility["unknown_tasks"])
+    events = {
+        event.get("task"): event
+        for event in provenance.get("events", [])
+        if isinstance(event, dict) and event.get("task")
+    }
+
+    print("Why didn't these tasks count?")
+    print()
+    for task_id in eligibility["requested_tasks"]:
+        print(task_id)
+        if task_id in exposed:
+            print("EXPOSED")
+            event = events.get(f"{result['benchmark']}/{task_id}")
+            if event and event.get("observed_at"):
+                print(f"Protected material was accessed at {event['observed_at']}")
+            else:
+                print("Registered protected material was accessed")
+        elif task_id in unknown:
+            print("UNKNOWN")
+            print(_inspection_unknown_reason(eligibility, provenance))
+        else:
+            print("CLEAN")
+            print("No recorded exposure in available monitoring history")
+        print()
+
+    coverage = result["monitoring_coverage"]
+    print(
+        "Monitoring: "
+        f"protected reads {coverage['protected_reads']}, "
+        f"generic agent access {coverage['generic_agent_access']}, "
+        f"Sibyl state {coverage['sibyl_state']}"
+    )
+
+
+def _inspection_unknown_reason(eligibility: dict[str, Any], provenance: dict[str, Any]) -> str:
+    reason = eligibility.get("reason") or provenance.get("reason")
+    if reason in {"incomplete_monitoring", "provenance_truncated"}:
+        return "Monitoring history is incomplete"
+    if reason == "warm_state_not_found":
+        return "Sibyl exposure state is unavailable"
+    if reason and str(reason).startswith("monitoring_"):
+        return "Monitoring history is unavailable"
+    return "Eligibility could not be established"
+
+
 def _cmd_protected_read(args: argparse.Namespace) -> int:
     config = load_config(resolve_config_path(args.config), require_benchmark=True)
     benchmark = require_benchmark(config)
@@ -288,6 +668,9 @@ def _cmd_protected_read(args: argparse.Namespace) -> int:
             sys.stdout.write("\n")
         print(f"CAPTURE: {result.capture.outcome.value}", file=sys.stderr)
         print(f"TASK: {result.receipt.task_key}", file=sys.stderr)
+        task_id = result.receipt.task_key.rsplit("/", 1)[-1]
+        print(f"Skepis: {task_id} was exposed.", file=sys.stderr)
+        print("It will not count as clean evaluation evidence.", file=sys.stderr)
     return 0
 
 
@@ -321,13 +704,97 @@ def _cmd_eval_run(args: argparse.Namespace) -> int:
     if args.as_json:
         print(json.dumps(result, sort_keys=True))
     else:
-        _print_partitions(result, include_selection=True)
-        print(f"EVALUATED: {_display_tasks(result['evaluated_tasks'])}")
-        print(f"SCORE: {result['score']}")
-        print(f"EVALUATION_COMPLETE: {str(result['evaluation_complete']).lower()}")
-        print(f"CLEAN_CLAIM_PERMITTED: {str(result['clean_claim_permitted']).lower()}")
-        _print_monitoring(result["monitoring_coverage"])
+        _print_human_evaluation(result)
     return exit_code
+
+
+def _print_human_evaluation(result: dict[str, Any]) -> None:
+    report = build_report(result)
+    evaluation = report["evaluation"]
+    eligibility = report["task_eligibility"]
+    counts = eligibility["counts"]
+    claim = report["clean_claim"]
+    monitoring = report["monitoring"]
+
+    if not claim["permitted"]:
+        print("Clean evaluation could not be established.")
+        print()
+        _print_evaluation_counts(counts)
+        print()
+        print(_human_evaluation_reason(claim["reason"], counts))
+        print()
+        print("Run `skepis inspect` for details.")
+    else:
+        print("Skepis Evaluation")
+        print()
+        print(f"{evaluation['evaluation_subject']} x {evaluation['benchmark']}")
+        print()
+        _print_evaluation_counts(counts)
+        print()
+        if counts["selected"]:
+            print(f"Evaluating {counts['selected']} clean tasks...")
+        else:
+            print("Evaluating no clean tasks.")
+        print()
+        _print_score(evaluation, evaluation.get("metrics", {}))
+        if counts["excluded"]:
+            print(f"{counts['excluded']} exposed tasks excluded")
+        if counts["flagged"]:
+            print(f"{counts['flagged']} exposed or uncertain tasks flagged")
+        print()
+        print("Clean claim: permitted")
+
+    print()
+    print(
+        "Monitoring: "
+        f"protected reads {monitoring['protected_reads']}, "
+        f"generic agent access {monitoring['generic_agent_access']}, "
+        f"Sibyl state {monitoring['sibyl_state']}"
+    )
+
+
+def _print_evaluation_counts(counts: dict[str, int]) -> None:
+    print(f"{counts['requested']} requested")
+    print(f"{counts['eligible']} clean")
+    print(f"{counts['exposed']} previously exposed")
+    if counts["unknown"]:
+        print(f"{counts['unknown']} unknown")
+
+
+def _print_score(evaluation: dict[str, Any], metrics: Any) -> None:
+    if isinstance(metrics, dict):
+        passed = metrics.get("passed")
+        total = metrics.get("total")
+        if (
+            isinstance(passed, (int, float))
+            and not isinstance(passed, bool)
+            and isinstance(total, (int, float))
+            and not isinstance(total, bool)
+        ):
+            print(f"Passed: {passed:g} / {total:g}")
+    score = evaluation.get("score")
+    if score is None:
+        print("Score: not provided")
+    else:
+        print(f"Score: {score}")
+
+
+def _human_evaluation_reason(reason: Any, counts: dict[str, int]) -> str:
+    if reason == "warm_state_not_found":
+        return "Sibyl exposure state is unavailable, so unknown tasks cannot support a clean claim."
+    if counts["unknown"]:
+        return "Monitoring history is incomplete, so unknown tasks cannot support a clean claim."
+    messages = {
+        "strict_policy_blocked": "The selected policy blocked exposed or uncertain tasks.",
+        "decision_not_journaled": "The policy decision could not be durably recorded.",
+        "run_not_fully_journaled": "The evaluation result could not be durably recorded.",
+        "evaluator_did_not_evaluate_all_selected_tasks": (
+            "The evaluator did not return a complete result for every selected task."
+        ),
+    }
+    if isinstance(reason, str) and reason.startswith("evaluator_failed:"):
+        return "The evaluator did not return a complete result."
+    return messages.get(str(reason), "The evaluation did not produce enough evidence for a clean claim.")
 
 
 def _cmd_report(args: argparse.Namespace) -> int:
@@ -447,13 +914,17 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "init":
             return _cmd_init(args)
+        if args.command == "connect":
+            return _cmd_connect(args)
         if args.command == "benchmark" and args.benchmark_command == "register":
             return _cmd_register(args)
         if args.command == "exposure" and args.exposure_command == "status":
             return _cmd_status(args)
         if args.command == "exposure" and args.exposure_command == "read":
             return _cmd_protected_read(args)
-        if args.command == "eval" and args.evaluation_command == "run":
+        if args.command == "inspect":
+            return _cmd_inspect(args)
+        if args.command == "eval" and args.evaluation_action in {None, "run"}:
             return _cmd_eval_run(args)
         if args.command == "report":
             return _cmd_report(args)

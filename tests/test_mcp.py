@@ -833,6 +833,7 @@ class McpWorkflowTests(unittest.TestCase):
         self.assertEqual(result["receipt"]["task_key"], "payments-regression/oauth-refresh-expiry")
         self.assertEqual(result["receipt"]["capture_outcome"], "RECORDED")
         self.assertEqual(result["receipt"]["status"], "success")
+        self.assertIn("will not count as clean evaluation evidence", result["consequence"])
         self.assertEqual(result["monitoring_coverage"]["protected_reads"], "COMPLETE")
         self.assertEqual(result["monitoring_coverage"]["generic_agent_access"], "INCOMPLETE_MONITORING")
         self.assertFalse(result["read_only"])

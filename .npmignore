@@ -1,0 +1,7 @@
+src/**/__pycache__/
+src/skepis.egg-info/
+tests/
+demo/
+examples/
+.venv/
+venv/

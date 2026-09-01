@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -251,10 +252,15 @@ def read_protected(
             "reason": classification.reason,
         }
     )
+    consequence = (
+        f"Skepis: {task_id} was exposed. "
+        "It will not count as clean evaluation evidence."
+    )
     return {
         "content": content,
         "content_encoding": encoding,
         "receipt": result.receipt.as_dict(),
+        "consequence": consequence,
         "monitoring_coverage": monitoring,
         "read_only": False,
     }
@@ -300,7 +306,7 @@ def _safe_run_payload(result: dict[str, Any], exit_code: int) -> dict[str, Any]:
     }
 
 
-def create_server() -> Any:
+def create_server(default_config_path: str | Path | None = None) -> Any:
     """Create the Skepis FastMCP server."""
 
     try:
@@ -311,6 +317,7 @@ def create_server() -> Any:
             "MCP support is unavailable. Install the `mcp` project dependency."
         ) from exc
 
+    server_default_config = str(default_config_path or DEFAULT_CONFIG_NAME)
     server = FastMCP(
         "skepis",
         instructions=(
@@ -339,10 +346,10 @@ def create_server() -> Any:
         structured_output=True,
     )
     def skepis_preflight(
-        config_path: str = str(DEFAULT_CONFIG_NAME),
+        config_path: str | None = None,
         task_ids: list[str] | None = None,
     ) -> dict[str, Any]:
-        return preflight(config_path, task_ids)
+        return preflight(config_path or server_default_config, task_ids)
 
     @server.tool(
         name="skepis_inspect",
@@ -361,10 +368,10 @@ def create_server() -> Any:
         structured_output=True,
     )
     def skepis_inspect(
-        config_path: str = str(DEFAULT_CONFIG_NAME),
+        config_path: str | None = None,
         task_ids: list[str] | None = None,
     ) -> dict[str, Any]:
-        return inspect(config_path, task_ids)
+        return inspect(config_path or server_default_config, task_ids)
 
     @server.tool(
         name="skepis_run",
@@ -384,11 +391,11 @@ def create_server() -> Any:
         structured_output=True,
     )
     def skepis_run(
-        config_path: str = str(DEFAULT_CONFIG_NAME),
+        config_path: str | None = None,
         task_ids: list[str] | None = None,
         policy: str | None = None,
     ) -> dict[str, Any]:
-        return run(config_path, task_ids, policy)
+        return run(config_path or server_default_config, task_ids, policy)
 
     @server.tool(
         name="skepis_report",
@@ -407,10 +414,10 @@ def create_server() -> Any:
         structured_output=True,
     )
     def skepis_report(
-        config_path: str = str(DEFAULT_CONFIG_NAME),
+        config_path: str | None = None,
         run_id: str | None = None,
     ) -> dict[str, Any]:
-        return report(config_path, run_id)
+        return report(config_path or server_default_config, run_id)
 
     @server.tool(
         name="skepis_read_protected",
@@ -432,12 +439,12 @@ def create_server() -> Any:
     def skepis_read_protected(
         path: str,
         session_id: str,
-        config_path: str = str(DEFAULT_CONFIG_NAME),
+        config_path: str | None = None,
         observed_at: str | None = None,
         encoding: str = "utf-8",
     ) -> dict[str, Any]:
         return read_protected(
-            config_path,
+            config_path or server_default_config,
             path,
             session_id,
             observed_at,
@@ -447,10 +454,17 @@ def create_server() -> Any:
     return server
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     """Run the Skepis MCP server over stdio."""
 
-    create_server().run(transport="stdio")
+    parser = argparse.ArgumentParser(description="Run the Skepis MCP server over stdio")
+    parser.add_argument(
+        "--config",
+        type=Path,
+        help="canonical project config used when a tool omits config_path",
+    )
+    args = parser.parse_args(argv)
+    create_server(args.config).run(transport="stdio")
 
 
 if __name__ == "__main__":
