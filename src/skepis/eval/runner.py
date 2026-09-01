@@ -89,6 +89,7 @@ def run_evaluation(
     evaluation_failed_journaled = False
     evaluation_complete = not decision.selected_tasks and decision.status != DecisionStatus.BLOCKED
     evaluated_tasks: list[str] = []
+    completed_at: str | None = None
 
     if decision.selected_tasks:
         request = EvaluationRequest(
@@ -182,7 +183,7 @@ def run_evaluation(
                 "gate_decision_journaled": decision.journaled,
                 "evaluation_completed_journaled": True,
                 "journaled": started_journaled and decision.journaled,
-                "completed_at": _timestamp(),
+                "completed_at": (completed_at := _timestamp()),
             },
         )
 
@@ -214,6 +215,7 @@ def run_evaluation(
         "evaluation_completed_journaled": completed_journaled,
         "evaluation_failed_journaled": evaluation_failed_journaled,
         "journaled": started_journaled and decision.journaled and completed_journaled,
+        "completed_at": completed_at,
         "monitoring_coverage": monitoring_coverage,
     }
     if evaluator_error is not None:

@@ -217,6 +217,60 @@ class ReportTests(unittest.TestCase):
 
         self.assertEqual(loaded["benchmark"], "payments-regression")
 
+    def test_report_loads_a_journaled_blocked_gate_without_claiming_clean(self):
+        class Memory:
+            def read_events(self, *, limit=1000):
+                return [
+                    {
+                        "ts": "2026-09-01T10:00:00Z",
+                        "extra": {
+                            "event_type": "evaluation_started",
+                            "run_id": "blocked-run",
+                            "tenant_id": "tenant-a",
+                            "evaluation_subject": "payments-agent",
+                            "benchmark": "payments-regression",
+                        },
+                    },
+                    {
+                        "ts": "2026-09-01T10:00:01Z",
+                        "extra": {
+                            "event_type": "evaluation_gate_decision",
+                            "run_id": "blocked-run",
+                            "tenant_id": "tenant-a",
+                            "evaluation_subject": "payments-agent",
+                            "benchmark": "payments-regression",
+                            "policy": "strict",
+                            "requested_tasks": ["oauth-refresh-expiry"],
+                            "clean_tasks": [],
+                            "exposed_tasks": ["oauth-refresh-expiry"],
+                            "unknown_tasks": [],
+                            "selected_tasks": [],
+                            "excluded_tasks": ["oauth-refresh-expiry"],
+                            "flagged_tasks": [],
+                            "status": "BLOCKED",
+                            "memory_available": True,
+                            "state_available": True,
+                            "clean_claim_permitted": False,
+                            "reason": "strict_policy_blocked",
+                        },
+                    },
+                ]
+
+        loaded = load_latest_evaluation(
+            Memory(),
+            tenant_id="tenant-a",
+            evaluation_subject="payments-agent",
+            benchmark_id="payments-regression",
+            run_id="blocked-run",
+        )
+        report = build_report(loaded)
+
+        self.assertEqual(loaded["status"], "BLOCKED")
+        self.assertFalse(report["clean_claim"]["permitted"])
+        self.assertFalse(report["provenance"]["evaluation_complete"])
+        self.assertTrue(report["provenance"]["gate_decision_journaled"])
+        self.assertFalse(report["provenance"]["journaled"])
+
     def test_report_reads_the_canonical_result_journaled_by_the_evaluation_runner(self):
         class Memory:
             def __init__(self):

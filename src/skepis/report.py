@@ -224,6 +224,7 @@ def load_latest_evaluation(
         raise ReportError("Sibyl event history returned an invalid result")
 
     scoped_runs: list[tuple[str, Mapping[str, Any], Mapping[str, Any], Any]] = []
+    scoped_gate_decisions: list[tuple[Mapping[str, Any], Mapping[str, Any], Any]] = []
     for event in events:
         if not isinstance(event, Mapping):
             raise ReportError("Sibyl event history contains an invalid event")
@@ -234,6 +235,7 @@ def load_latest_evaluation(
             "evaluation_started",
             "evaluation_completed",
             "evaluation_failed",
+            "evaluation_gate_decision",
         }:
             continue
         if extra.get("tenant_id") != tenant_id:
@@ -243,6 +245,9 @@ def load_latest_evaluation(
         if extra.get("benchmark") != benchmark_id:
             continue
         if run_id is not None and extra.get("run_id") != run_id:
+            continue
+        if event_type == "evaluation_gate_decision":
+            scoped_gate_decisions.append((event, extra, event.get("ts")))
             continue
         scoped_runs.append((str(event_type), event, extra, event.get("ts")))
 
@@ -258,6 +263,13 @@ def load_latest_evaluation(
         )
         if event_type == "evaluation_started":
             selected_run = extra.get("run_id")
+            blocked = _blocked_gate_report_source(
+                scoped_gate_decisions,
+                run_id=selected_run if isinstance(selected_run, str) else run_id,
+                started_journaled=True,
+            )
+            if blocked is not None:
+                return blocked
             raise ReportError(
                 f"evaluation {selected_run or run_id or 'latest'} has no completed result"
             )
@@ -266,9 +278,63 @@ def load_latest_evaluation(
             result["completed_at"] = timestamp
         return result
 
+    blocked = _blocked_gate_report_source(
+        scoped_gate_decisions,
+        run_id=run_id,
+        started_journaled=False,
+    )
+    if blocked is not None:
+        return blocked
+
     scope = f"{tenant_id}/{evaluation_subject}/{benchmark_id}"
     suffix = f" and run {run_id}" if run_id is not None else ""
     raise ReportError(f"no completed evaluation found for {scope}{suffix}")
+
+
+def _blocked_gate_report_source(
+    decisions: list[tuple[Mapping[str, Any], Mapping[str, Any], Any]],
+    *,
+    run_id: str | None,
+    started_journaled: bool,
+) -> dict[str, Any] | None:
+    """Turn a journaled BLOCKED gate decision into a reportable run source."""
+
+    candidates = [
+        item
+        for item in decisions
+        if item[1].get("status") == "BLOCKED"
+        and (run_id is None or item[1].get("run_id") == run_id)
+    ]
+    if not candidates:
+        return None
+    _, extra, timestamp = max(
+        enumerate(candidates),
+        key=lambda item: (
+            _event_timestamp(item[1][2]) is not None,
+            _event_timestamp(item[1][2])
+            or datetime.min.replace(tzinfo=timezone.utc),
+            item[0],
+        ),
+    )[1]
+    source = dict(extra)
+    source.update(
+        {
+            "evaluated_tasks": [],
+            "evaluation_result": None,
+            "metrics": {},
+            "score": None,
+            "evaluation_complete": False,
+            "clean_claim_permitted": False,
+            "evaluation_started_journaled": started_journaled,
+            "gate_decision_journaled": True,
+            "evaluation_completed_journaled": False,
+            "evaluation_failed_journaled": False,
+            "journaled": False,
+        }
+    )
+    if timestamp is not None and "completed_at" not in source:
+        source["completed_at"] = timestamp
+    return source
 
 
 def load_scoped_exposure_provenance(

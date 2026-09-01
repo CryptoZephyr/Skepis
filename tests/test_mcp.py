@@ -8,7 +8,8 @@ import tempfile
 import unittest
 
 from skepis.config import initialize_config, register_benchmark
-from skepis.mcp import inspect, preflight
+from skepis.capture import ProtectedReadError
+from skepis.mcp import inspect, preflight, read_protected, report, run
 
 
 TASK_IDS = [
@@ -32,14 +33,42 @@ class FakeMemory:
             raise error("missing")
         return {"body": self.body}
 
+    def set_entity(self, _category, _name, body, *, status=None):
+        self.body = body
+        return {"body": body, "status": status}
+
+    def write_event(self, *, extra=None, ts=None, **_):
+        event_id = f"event-{len(self.events) + 1}"
+        self.events.append({"id": event_id, "extra": extra, "ts": ts})
+        return event_id
+
     def read_events(self, *, limit=50, since=None, until=None):
         if self.read_error is not None:
             raise self.read_error
         return self.events[-limit:]
 
 
-def write_config(root: Path, *, name: str = "skepis.toml", tenant_id: str = "tenant-a") -> Path:
+def write_config(
+    root: Path,
+    *,
+    name: str = "skepis.toml",
+    tenant_id: str = "tenant-a",
+    benchmark_id: str = "payments-regression",
+    evaluation_subject: str = "payments-agent",
+    task_ids: list[str] | None = None,
+    protected_paths: dict[str, list[str]] | None = None,
+    evaluator_command: tuple[str, ...] | None = None,
+) -> Path:
     config_path = root / name
+    task_ids = list(TASK_IDS if task_ids is None else task_ids)
+    protected_paths = (
+        {
+            "refund-idempotency": ["answers/refund/idempotency.yaml"],
+            "oauth-refresh-expiry": ["answers/oauth/refresh-expiry.json"],
+        }
+        if protected_paths is None
+        else protected_paths
+    )
     initialize_config(
         config_path,
         project_root=root,
@@ -48,13 +77,11 @@ def write_config(root: Path, *, name: str = "skepis.toml", tenant_id: str = "ten
     )
     register_benchmark(
         config_path,
-        benchmark_id="payments-regression",
-        evaluation_subject="payments-agent",
-        task_ids=TASK_IDS,
-        protected_paths={
-            "refund-idempotency": ["answers/refund/idempotency.yaml"],
-            "oauth-refresh-expiry": ["answers/oauth/refresh-expiry.json"],
-        },
+        benchmark_id=benchmark_id,
+        evaluation_subject=evaluation_subject,
+        task_ids=task_ids,
+        protected_paths=protected_paths,
+        evaluator_command=evaluator_command,
     )
     return config_path
 
@@ -367,12 +394,23 @@ class McpPreflightTests(unittest.TestCase):
 
         self.assertEqual(
             [tool.name for tool in listed.tools],
-            ["skepis_preflight", "skepis_inspect"],
+            [
+                "skepis_preflight",
+                "skepis_inspect",
+                "skepis_run",
+                "skepis_report",
+                "skepis_read_protected",
+            ],
         )
-        for tool in listed.tools:
-            self.assertTrue(tool.annotations.readOnlyHint)
-            self.assertFalse(tool.annotations.destructiveHint)
-            self.assertTrue(tool.annotations.idempotentHint)
+        annotations = {tool.name: tool.annotations for tool in listed.tools}
+        for name in ("skepis_preflight", "skepis_inspect", "skepis_report"):
+            self.assertTrue(annotations[name].readOnlyHint)
+            self.assertFalse(annotations[name].destructiveHint)
+            self.assertTrue(annotations[name].idempotentHint)
+        for name in ("skepis_run", "skepis_read_protected"):
+            self.assertFalse(annotations[name].readOnlyHint)
+            self.assertFalse(annotations[name].destructiveHint)
+            self.assertFalse(annotations[name].idempotentHint)
         self.assertEqual(exposed.isError, False)
         self.assertEqual(inspected.isError, False)
         self.assertEqual(isolated.isError, False)
@@ -568,7 +606,13 @@ class McpPreflightTests(unittest.TestCase):
 
         self.assertEqual(
             [tool.name for tool in listed.tools],
-            ["skepis_preflight", "skepis_inspect"],
+            [
+                "skepis_preflight",
+                "skepis_inspect",
+                "skepis_run",
+                "skepis_report",
+                "skepis_read_protected",
+            ],
         )
         self.assertFalse(result.isError)
         payload = result.structuredContent
@@ -608,6 +652,629 @@ class McpPreflightTests(unittest.TestCase):
         ):
             self.assertNotIn(secret, encoded)
         self.assertEqual(before, after)
+
+
+class McpWorkflowTests(unittest.TestCase):
+    def test_run_reuses_gate_and_returns_a_safe_report_projection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = write_config(root)
+            memory = FakeMemory(scoped_body())
+            received = []
+
+            def evaluator(request):
+                received.append(request.task_ids)
+                return {
+                    "evaluated_tasks": list(request.task_ids),
+                    "metrics": {
+                        "received_count": len(request.task_ids),
+                        "hidden_answer": "must not cross MCP",
+                    },
+                    "score": 0.75,
+                    "details": {"secret": "must not cross MCP"},
+                }
+
+            result = run(
+                config_path,
+                policy="exclude",
+                memory=memory,
+                evaluator=evaluator,
+                run_id="mcp-run-safe-1",
+            )
+            loaded = report(
+                config_path,
+                "mcp-run-safe-1",
+                memory=memory,
+            )
+
+        expected_selected = [
+            "inventory-race-condition",
+            "ledger-replay-window",
+            "merchant-timezone-cutoff",
+            "refund-idempotency",
+        ]
+        self.assertEqual(received, [tuple(expected_selected)])
+        self.assertEqual(result["status"], "EXCLUDED")
+        self.assertEqual(result["selected_tasks"], expected_selected)
+        self.assertEqual(result["excluded_tasks"], ["oauth-refresh-expiry"])
+        self.assertEqual(result["evaluated_tasks"], expected_selected)
+        self.assertEqual(result["score"], 0.75)
+        self.assertTrue(result["clean_claim_permitted"])
+        self.assertFalse(result["read_only"])
+        self.assertNotIn("evaluation_result", result)
+        encoded = json.dumps(result, sort_keys=True)
+        self.assertNotIn("must not cross MCP", encoded)
+        self.assertEqual(loaded, result["report"])
+        self.assertEqual(loaded["evaluation"]["evaluated_count"], 4)
+        self.assertTrue(loaded["clean_claim"]["permitted"])
+
+    def test_run_preserves_exclude_flag_and_strict_fail_closed_results(self):
+        task_ids = ["clean-refund", "exposed-refund", "uncertain-refund"]
+        body = {
+            "tenant_id": "tenant-a",
+            "evaluation_subject": "payments-agent",
+            "benchmark": "payments-regression",
+            "tasks": {
+                "clean-refund": {"eligibility": "UNSEEN"},
+                "exposed-refund": {"eligibility": "EXPOSED"},
+                "uncertain-refund": {"eligibility": "REVIEW_REQUIRED"},
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(Path(tmp), task_ids=task_ids, protected_paths={})
+            for policy, expected_status, expected_selected, expected_flagged, expected_exit in (
+                ("exclude", "BLOCKED", ["clean-refund"], [], 2),
+                ("flag", "FLAGGED", task_ids, ["exposed-refund", "uncertain-refund"], 0),
+                ("strict", "BLOCKED", [], [], 2),
+            ):
+                with self.subTest(policy=policy):
+                    memory = FakeMemory(body)
+                    result = run(
+                        config_path,
+                        task_ids,
+                        policy,
+                        memory=memory,
+                        evaluator=lambda request: {
+                            "evaluated_tasks": list(request.task_ids),
+                            "metrics": {"received_count": len(request.task_ids)},
+                        },
+                    )
+
+                    self.assertEqual(result["status"], expected_status)
+                    self.assertEqual(result["selected_tasks"], sorted(expected_selected))
+                    self.assertEqual(result["flagged_tasks"], sorted(expected_flagged))
+                    self.assertEqual(result["exit_code"], expected_exit)
+                    self.assertFalse(result["clean_claim_permitted"])
+                    self.assertFalse(result["report"]["clean_claim"]["permitted"])
+                    if policy == "strict":
+                        self.assertEqual(result["evaluated_tasks"], [])
+                        self.assertFalse(result["evaluation_complete"])
+
+    def test_run_surfaces_evaluator_failure_without_raw_error_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(Path(tmp))
+
+            def evaluator(_request):
+                raise RuntimeError("private evaluator output")
+
+            result = run(
+                config_path,
+                ["refund-idempotency"],
+                "strict",
+                memory=FakeMemory(
+                    {
+                        **scoped_body(),
+                        "tasks": {
+                            "refund-idempotency": {"eligibility": "UNSEEN"},
+                        },
+                    }
+                ),
+                evaluator=evaluator,
+            )
+
+        self.assertEqual(result["status"], "EVALUATOR_FAILED")
+        self.assertEqual(result["exit_code"], 1)
+        self.assertFalse(result["clean_claim_permitted"])
+        self.assertFalse(result["evaluation_complete"])
+        self.assertNotIn("evaluation_error", result)
+        self.assertNotIn("private evaluator output", json.dumps(result))
+
+    def test_run_rejects_unauthorized_evaluator_tasks_without_bypassing_the_gate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(Path(tmp))
+            result = run(
+                config_path,
+                ["refund-idempotency"],
+                "strict",
+                memory=FakeMemory(
+                    {
+                        **scoped_body(),
+                        "tasks": {
+                            "refund-idempotency": {"eligibility": "UNSEEN"},
+                        },
+                    }
+                ),
+                evaluator=lambda _request: {
+                    "evaluated_tasks": ["outside-policy"],
+                },
+            )
+
+        self.assertEqual(result["status"], "EVALUATOR_FAILED")
+        self.assertEqual(result["selected_tasks"], ["refund-idempotency"])
+        self.assertEqual(result["evaluated_tasks"], [])
+        self.assertFalse(result["clean_claim_permitted"])
+        self.assertNotIn("evaluation_result", result)
+
+    def test_run_requires_a_configured_evaluator_when_no_test_seam_is_supplied(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(Path(tmp))
+            with self.assertRaisesRegex(ValueError, "missing evaluator command"):
+                run(config_path, memory=FakeMemory(scoped_body()))
+
+    def test_read_protected_uses_the_existing_boundary_and_returns_a_receipt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = write_config(root)
+            protected = root / "answers/oauth/refresh-expiry.json"
+            protected.parent.mkdir(parents=True)
+            protected.write_text("opaque protected material", encoding="utf-8")
+            memory = FakeMemory()
+
+            result = read_protected(
+                config_path,
+                str(protected),
+                "mcp-session-a",
+                "2026-09-01T10:00:00Z",
+                memory=memory,
+            )
+
+        self.assertEqual(result["content"], "opaque protected material")
+        self.assertEqual(result["receipt"]["task_key"], "payments-regression/oauth-refresh-expiry")
+        self.assertEqual(result["receipt"]["capture_outcome"], "RECORDED")
+        self.assertEqual(result["receipt"]["status"], "success")
+        self.assertEqual(result["monitoring_coverage"]["protected_reads"], "COMPLETE")
+        self.assertEqual(result["monitoring_coverage"]["generic_agent_access"], "INCOMPLETE_MONITORING")
+        self.assertFalse(result["read_only"])
+        self.assertEqual(memory.body["tasks"]["oauth-refresh-expiry"]["eligibility"], "EXPOSED")
+        self.assertEqual(memory.events[0]["extra"]["event_type"], "benchmark_material_observed")
+
+    def test_read_protected_rejects_unregistered_and_failed_reads_without_hard_exposure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = write_config(root)
+            public = root / "public.txt"
+            public.write_text("public", encoding="utf-8")
+            memory = FakeMemory()
+
+            with self.assertRaisesRegex(ProtectedReadError, "not registered as protected"):
+                read_protected(
+                    config_path,
+                    public,
+                    "mcp-session-public",
+                    memory=memory,
+                )
+            self.assertIsNone(memory.body)
+            self.assertEqual(memory.events, [])
+
+            with self.assertRaisesRegex(ProtectedReadError, "protected read failed"):
+                read_protected(
+                    config_path,
+                    "answers/oauth/refresh-expiry.json",
+                    "mcp-session-missing",
+                    "2026-09-01T10:01:00Z",
+                    memory=memory,
+                )
+
+        self.assertIsNotNone(memory.body)
+        self.assertEqual(memory.body["tasks"], {})
+        self.assertEqual(memory.body["monitoring_status"], "INCOMPLETE_MONITORING")
+        self.assertEqual(memory.events[0]["extra"]["event_type"], "observation_gap_detected")
+
+    @unittest.skipUnless(
+        importlib.util.find_spec("mcp") and importlib.util.find_spec("sibyl_memory_client"),
+        "MCP workflow proof requires the MCP SDK and configured Sibyl runtime",
+    )
+    def test_stdio_client_proves_fresh_process_read_run_report_and_policy_modes(self):
+        from mcp import ClientSession, StdioServerParameters
+        from mcp.client.stdio import stdio_client
+        from sibyl_memory_client import MemoryClient
+
+        task_ids = [
+            "refund-idempotency",
+            "oauth-refresh-expiry",
+            "inventory-race-condition",
+            "ledger-replay-window",
+        ]
+        async def open_session(project: Path):
+            source_root = Path(__file__).parents[1] / "src"
+            child_env = dict(os.environ)
+            child_env["PYTHONPATH"] = str(source_root)
+            params = StdioServerParameters(
+                command=os.fspath(Path(sys.executable)),
+                args=["-m", "skepis.mcp"],
+                env=child_env,
+                cwd=project,
+            )
+            return stdio_client(params)
+
+        async def first_process(project: Path, config_path: Path):
+            async with await open_session(project) as (read_stream, write_stream):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+                    listed = await session.list_tools()
+                    missing_state = await session.call_tool(
+                        "skepis_run",
+                        {
+                            "config_path": os.fspath(config_path),
+                            "policy": "strict",
+                        },
+                    )
+                    missing_body = missing_state.structuredContent
+                    missing_body = missing_body.get("result", missing_body)
+                    missing_report = await session.call_tool(
+                        "skepis_report",
+                        {
+                            "config_path": os.fspath(config_path),
+                            "run_id": missing_body["run_id"],
+                        },
+                    )
+                    read = await session.call_tool(
+                        "skepis_read_protected",
+                        {
+                            "config_path": os.fspath(config_path),
+                            "path": "private_material/oauth/refresh.json",
+                            "session_id": "mcp-session-a",
+                            "observed_at": "2026-09-01T10:00:00Z",
+                        },
+                    )
+                    return listed, missing_state, missing_report, read
+
+        async def second_process(project: Path, config_path: Path):
+            async with await open_session(project) as (read_stream, write_stream):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+                    preflight_result = await session.call_tool(
+                        "skepis_preflight",
+                        {
+                            "config_path": os.fspath(config_path),
+                            "task_ids": list(reversed(task_ids)),
+                        },
+                    )
+                    inspected = await session.call_tool(
+                        "skepis_inspect",
+                        {
+                            "config_path": os.fspath(config_path),
+                            "task_ids": task_ids,
+                        },
+                    )
+                    inspection_readback = MemoryClient.local(
+                        str(project / ".skepis/memory.db")
+                    ).read_events(limit=1000)
+                    excluded = await session.call_tool(
+                        "skepis_run",
+                        {
+                            "config_path": os.fspath(config_path),
+                            "policy": "exclude",
+                        },
+                    )
+                    excluded_body = excluded.structuredContent
+                    excluded_body = excluded_body.get("result", excluded_body)
+                    retrieved = await session.call_tool(
+                        "skepis_report",
+                        {
+                            "config_path": os.fspath(config_path),
+                            "run_id": excluded_body["run_id"],
+                        },
+                    )
+                    flagged = await session.call_tool(
+                        "skepis_run",
+                        {
+                            "config_path": os.fspath(config_path),
+                            "policy": "flag",
+                        },
+                    )
+                    strict = await session.call_tool(
+                        "skepis_run",
+                        {
+                            "config_path": os.fspath(config_path),
+                            "policy": "strict",
+                        },
+                    )
+                    return (
+                        preflight_result,
+                        inspected,
+                        excluded,
+                        retrieved,
+                        flagged,
+                        strict,
+                        inspection_readback,
+                    )
+
+        with tempfile.TemporaryDirectory(prefix="skepis-mcp-workflow-") as tmp:
+            root = Path(tmp)
+            evaluator = root / "evaluator.py"
+            evaluator.write_text(
+                """
+import json
+import os
+
+request = json.loads(open(os.environ["SKEPIS_EVALUATION_REQUEST"], encoding="utf-8").read())
+print(json.dumps({
+    "evaluated_tasks": request["task_ids"],
+    "metrics": {
+        "received_count": len(request["task_ids"]),
+        "hidden_answer": "raw evaluator secret",
+    },
+    "score": 0.5,
+    "details": {"secret": "raw evaluator detail"},
+}))
+""",
+                encoding="utf-8",
+            )
+            config_path = root / "skepis.toml"
+            initialize_config(config_path, project_root=root, tenant_id="tenant-mcp")
+            register_benchmark(
+                config_path,
+                benchmark_id="arbitrary-workflow",
+                evaluation_subject="agent-under-test",
+                task_ids=task_ids,
+                protected_paths={
+                    "oauth-refresh-expiry": ["private_material/oauth/refresh.json"],
+                    "refund-idempotency": [
+                        "private_material/refund/input.yaml",
+                        "private_material/refund/notes/*.txt",
+                    ],
+                },
+                evaluator_command=(sys.executable, "evaluator.py"),
+            )
+            protected = root / "private_material/oauth/refresh.json"
+            protected.parent.mkdir(parents=True)
+            protected.write_text("MCP protected secret", encoding="utf-8")
+
+            listed, missing_state, missing_report, read = asyncio.run(
+                first_process(root, config_path)
+            )
+            before_readback = MemoryClient.local(str(root / ".skepis/memory.db")).read_events(limit=1000)
+            results = asyncio.run(second_process(root, config_path))
+            after_readback = MemoryClient.local(str(root / ".skepis/memory.db")).read_events(limit=1000)
+
+        names = [tool.name for tool in listed.tools]
+        self.assertEqual(
+            names,
+            [
+                "skepis_preflight",
+                "skepis_inspect",
+                "skepis_run",
+                "skepis_report",
+                "skepis_read_protected",
+            ],
+        )
+        annotations = {tool.name: tool.annotations for tool in listed.tools}
+        for name in ("skepis_preflight", "skepis_inspect", "skepis_report"):
+            self.assertTrue(annotations[name].readOnlyHint)
+            self.assertTrue(annotations[name].idempotentHint)
+            self.assertFalse(annotations[name].destructiveHint)
+        for name in ("skepis_run", "skepis_read_protected"):
+            self.assertFalse(annotations[name].readOnlyHint)
+            self.assertFalse(annotations[name].idempotentHint)
+            self.assertFalse(annotations[name].destructiveHint)
+
+        self.assertFalse(missing_state.isError)
+        missing_body = missing_state.structuredContent
+        missing_body = missing_body.get("result", missing_body)
+        self.assertEqual(missing_body["status"], "BLOCKED")
+        self.assertEqual(missing_body["unknown_tasks"], sorted(task_ids))
+        self.assertFalse(missing_body["clean_claim_permitted"])
+        self.assertEqual(missing_body["exit_code"], 2)
+
+        self.assertFalse(missing_report.isError)
+        missing_report_body = missing_report.structuredContent
+        missing_report_body = missing_report_body.get("result", missing_report_body)
+        self.assertEqual(missing_report_body["evaluation"]["status"], "BLOCKED")
+        self.assertFalse(missing_report_body["clean_claim"]["permitted"])
+        self.assertFalse(missing_report_body["provenance"]["evaluation_complete"])
+        self.assertEqual(missing_report_body["monitoring"]["sibyl_state"], "UNAVAILABLE")
+
+        self.assertFalse(read.isError)
+        read_body = read.structuredContent
+        read_body = read_body.get("result", read_body)
+        self.assertEqual(read_body["content"], "MCP protected secret")
+        self.assertEqual(read_body["receipt"]["task_key"], "arbitrary-workflow/oauth-refresh-expiry")
+        self.assertEqual(read_body["receipt"]["capture_outcome"], "RECORDED")
+
+        (
+            preflight_result,
+            inspected,
+            excluded,
+            retrieved,
+            flagged,
+            strict,
+            inspection_readback,
+        ) = results
+        for response in (preflight_result, inspected, excluded, retrieved, flagged, strict):
+            self.assertFalse(response.isError)
+        preflight_body = preflight_result.structuredContent
+        preflight_body = preflight_body.get("result", preflight_body)
+        self.assertEqual(preflight_body["exposed_tasks"], ["oauth-refresh-expiry"])
+        self.assertEqual(
+            preflight_body["clean_tasks"],
+            ["inventory-race-condition", "ledger-replay-window", "refund-idempotency"],
+        )
+        inspect_body = inspected.structuredContent
+        inspect_body = inspect_body.get("result", inspect_body)
+        self.assertEqual(inspect_body["provenance"]["status"], "AVAILABLE")
+        self.assertEqual(len(inspect_body["provenance"]["events"]), 1)
+        self.assertNotIn("MCP protected secret", json.dumps(inspect_body))
+        self.assertEqual(before_readback, inspection_readback)
+
+        excluded_body = excluded.structuredContent
+        excluded_body = excluded_body.get("result", excluded_body)
+        self.assertEqual(excluded_body["status"], "EXCLUDED")
+        self.assertEqual(
+            excluded_body["selected_tasks"],
+            ["inventory-race-condition", "ledger-replay-window", "refund-idempotency"],
+        )
+        self.assertEqual(excluded_body["evaluated_tasks"], excluded_body["selected_tasks"])
+        self.assertTrue(excluded_body["clean_claim_permitted"])
+        self.assertNotIn("evaluation_result", excluded_body)
+        self.assertNotIn("raw evaluator secret", json.dumps(excluded_body))
+
+        retrieved_body = retrieved.structuredContent
+        retrieved_body = retrieved_body.get("result", retrieved_body)
+        self.assertEqual(retrieved_body, excluded_body["report"])
+        self.assertTrue(retrieved_body["clean_claim"]["permitted"])
+        self.assertEqual(retrieved_body["evaluation"]["evaluated_count"], 3)
+        self.assertNotIn("raw evaluator detail", json.dumps(retrieved_body))
+        self.assertEqual(
+            retrieved_body["monitoring"]["generic_agent_access"],
+            "INCOMPLETE_MONITORING",
+        )
+
+        flagged_body = flagged.structuredContent
+        flagged_body = flagged_body.get("result", flagged_body)
+        self.assertEqual(flagged_body["status"], "FLAGGED")
+        self.assertEqual(flagged_body["selected_tasks"], sorted(task_ids))
+        self.assertEqual(flagged_body["flagged_tasks"], ["oauth-refresh-expiry"])
+        self.assertFalse(flagged_body["clean_claim_permitted"])
+        self.assertEqual(flagged_body["exit_code"], 0)
+
+        strict_body = strict.structuredContent
+        strict_body = strict_body.get("result", strict_body)
+        self.assertEqual(strict_body["status"], "BLOCKED")
+        self.assertEqual(strict_body["selected_tasks"], [])
+        self.assertEqual(strict_body["evaluated_tasks"], [])
+        self.assertFalse(strict_body["clean_claim_permitted"])
+        self.assertEqual(strict_body["exit_code"], 2)
+
+        event_types = []
+        for event in after_readback:
+            extra = event.get("extra", {}) if isinstance(event, dict) else {}
+            if isinstance(extra, str):
+                extra = json.loads(extra)
+            if isinstance(extra, dict) and extra.get("event_type"):
+                event_types.append(extra["event_type"])
+        self.assertIn("benchmark_material_observed", event_types)
+        self.assertIn("evaluation_started", event_types)
+        self.assertIn("evaluation_gate_decision", event_types)
+        self.assertIn("evaluation_completed", event_types)
+
+    @unittest.skipUnless(
+        importlib.util.find_spec("mcp") and importlib.util.find_spec("sibyl_memory_client"),
+        "MCP failure-mode proof requires the MCP SDK and configured Sibyl runtime",
+    )
+    def test_stdio_client_surfaces_evaluator_failure_and_incomplete_monitoring(self):
+        from mcp import ClientSession, StdioServerParameters
+        from mcp.client.stdio import stdio_client
+        from sibyl_memory_client import MemoryClient
+
+        async def exercise(project: Path, config_path: Path):
+            source_root = Path(__file__).parents[1] / "src"
+            child_env = dict(os.environ)
+            child_env["PYTHONPATH"] = str(source_root)
+            params = StdioServerParameters(
+                command=os.fspath(Path(sys.executable)),
+                args=["-m", "skepis.mcp"],
+                env=child_env,
+                cwd=project,
+            )
+            async with stdio_client(params) as (read_stream, write_stream):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+                    failed = await session.call_tool(
+                        "skepis_run",
+                        {
+                            "config_path": os.fspath(config_path),
+                            "policy": "strict",
+                        },
+                    )
+                    failed_body = failed.structuredContent
+                    failed_body = failed_body.get("result", failed_body)
+                    retrieved = await session.call_tool(
+                        "skepis_report",
+                        {
+                            "config_path": os.fspath(config_path),
+                            "run_id": failed_body["run_id"],
+                        },
+                    )
+
+                    memory = MemoryClient.local(str(project / ".skepis/memory.db"))
+                    memory.set_entity(
+                        "benchmark_exposure",
+                        "tenant-failure/agent-under-test/failure-benchmark",
+                        {
+                            "tenant_id": "tenant-failure",
+                            "evaluation_subject": "agent-under-test",
+                            "benchmark": "failure-benchmark",
+                            "monitoring_status": "INCOMPLETE_MONITORING",
+                            "tasks": {"clean-task": {"eligibility": "UNSEEN"}},
+                        },
+                        status="INCOMPLETE_MONITORING",
+                    )
+                    incomplete = await session.call_tool(
+                        "skepis_run",
+                        {
+                            "config_path": os.fspath(config_path),
+                            "policy": "strict",
+                        },
+                    )
+                    return failed, failed_body, retrieved, incomplete
+
+        with tempfile.TemporaryDirectory(prefix="skepis-mcp-failure-") as tmp:
+            root = Path(tmp)
+            evaluator = root / "failing_evaluator.py"
+            evaluator.write_text(
+                "import sys\nprint('private evaluator failure', file=sys.stderr)\nsys.exit(7)\n",
+                encoding="utf-8",
+            )
+            config_path = write_config(
+                root,
+                tenant_id="tenant-failure",
+                benchmark_id="failure-benchmark",
+                evaluation_subject="agent-under-test",
+                task_ids=["clean-task"],
+                protected_paths={},
+                evaluator_command=(sys.executable, "failing_evaluator.py"),
+            )
+            memory = MemoryClient.local(str(root / ".skepis/memory.db"))
+            memory.set_entity(
+                "benchmark_exposure",
+                "tenant-failure/agent-under-test/failure-benchmark",
+                {
+                    "tenant_id": "tenant-failure",
+                    "evaluation_subject": "agent-under-test",
+                    "benchmark": "failure-benchmark",
+                    "tasks": {"clean-task": {"eligibility": "UNSEEN"}},
+                },
+                status="UNSEEN",
+            )
+            failed, failed_body, retrieved, incomplete = asyncio.run(
+                exercise(root, config_path)
+            )
+
+        self.assertFalse(failed.isError)
+        self.assertEqual(failed_body["status"], "EVALUATOR_FAILED")
+        self.assertEqual(failed_body["exit_code"], 1)
+        self.assertEqual(failed_body["selected_tasks"], ["clean-task"])
+        self.assertFalse(failed_body["clean_claim_permitted"])
+        self.assertNotIn("evaluation_error", failed_body)
+        self.assertNotIn("private evaluator failure", json.dumps(failed_body))
+
+        self.assertFalse(retrieved.isError)
+        retrieved_body = retrieved.structuredContent
+        retrieved_body = retrieved_body.get("result", retrieved_body)
+        self.assertEqual(retrieved_body["evaluation"]["status"], "EVALUATOR_FAILED")
+        self.assertFalse(retrieved_body["clean_claim"]["permitted"])
+        self.assertNotIn("private evaluator failure", json.dumps(retrieved_body))
+
+        self.assertFalse(incomplete.isError)
+        incomplete_body = incomplete.structuredContent
+        incomplete_body = incomplete_body.get("result", incomplete_body)
+        self.assertEqual(incomplete_body["status"], "BLOCKED")
+        self.assertEqual(incomplete_body["unknown_tasks"], ["clean-task"])
+        self.assertEqual(incomplete_body["monitoring_coverage"]["status"], "INCOMPLETE_MONITORING")
+        self.assertFalse(incomplete_body["clean_claim_permitted"])
+        self.assertEqual(incomplete_body["evaluated_tasks"], [])
 
 
 if __name__ == "__main__":

@@ -69,11 +69,17 @@ python -m skepis report --config skepis.toml --json
 
 The JSON report includes the benchmark, evaluation subject, run ID, task eligibility partitions, selected and evaluated tasks, policy, score, clean-claim decision, journal provenance, and monitoring coverage. Raw evaluator `details`, extra fields, and non-scalar or sensitive metric values are omitted from the portable artifact. The report always exposes the known generic-agent boundary as `INCOMPLETE_MONITORING`.
 
-## Read-only MCP preflight and inspection
+## MCP workflow
 
-The repository now includes two read-only MCP tools, `skepis_preflight` and `skepis_inspect`, served by `skepis-mcp` or `python -m skepis.mcp`. Both load the developer configuration and reuse the existing `EvaluationGate.classify` path. Preflight returns the scoped `CLEAN`, `EXPOSED`, and `UNKNOWN` partitions, memory and state availability, the configured policy for context, and monitoring coverage.
+The repository includes five MCP tools, served by `skepis-mcp` or `python -m skepis.mcp`. They are thin interfaces over the existing Sibyl, capture, policy, evaluator, and report paths.
 
-Inspect returns the same eligibility and monitoring view plus safe, scope-filtered exposure provenance. It includes only allowlisted event metadata and protected-read receipt fields. Raw event extras, protected contents, and sensitive evidence are omitted. Both tools are read-only. They do not read protected resources, write Sibyl state, journal a policy decision, run an evaluator, or expose a clean-claim result. Missing or mismatched Sibyl state remains `UNKNOWN` and `UNAVAILABLE`. Incomplete monitoring keeps otherwise-clean tasks `UNKNOWN`, and generic filesystem, Bash, browser, MCP, and Codex access remains `INCOMPLETE_MONITORING`.
+`skepis_preflight`, `skepis_inspect`, and `skepis_report` are read-only and idempotent. Preflight returns scoped `CLEAN`, `EXPOSED`, and `UNKNOWN` partitions. Inspect adds safe, scope-filtered exposure provenance. Report retrieves the latest or requested scoped journaled run and returns the portable report schema. Raw event extras, evaluator details, protected contents, and sensitive metrics are omitted.
+
+`skepis_run` is a write operation. It loads the configured evaluator, calls the existing `run_evaluation` path, applies `EXCLUDE`, `FLAG`, or `STRICT` through `EvaluationGate.evaluate`, and hands the evaluator only the selected task IDs. It returns the run status, safe public metrics, journal markers, exit code, and a nested portable report. Evaluator failures, incomplete task coverage, unknown state, and incomplete monitoring cannot produce a clean claim.
+
+`skepis_read_protected` is a controlled write operation. It accepts one registered project-relative path, uses `ProtectedReadBoundary` to read the file, and records objective exposure only after the read succeeds. The response contains the file content, the existing protected-read receipt, and monitoring coverage. Unregistered, ambiguous, outside-root, and failed reads are rejected or recorded as incomplete monitoring without hard exposure.
+
+Missing or mismatched Sibyl state remains `UNKNOWN` and `UNAVAILABLE`. Incomplete monitoring keeps otherwise-clean tasks `UNKNOWN`. The controlled MCP protected-read route is covered, while generic filesystem, Bash, browser, internal-tool, and unsupported MCP or Codex access remains `INCOMPLETE_MONITORING`.
 
 Example MCP arguments:
 
@@ -84,7 +90,7 @@ Example MCP arguments:
 }
 ```
 
-Omit `task_ids` to classify and inspect every task registered in the configured benchmark. The MCP server exposes no other tools yet. The two-tool proof covers semantic task IDs, scope isolation, missing-store fail-closed behavior, incomplete monitoring, safe provenance redaction, and the absence of journal writes.
+Omit `task_ids` to classify, inspect, or run every task registered in the configured benchmark. `skepis_report` accepts an optional `run_id` to retrieve one exact run. `skepis_run` uses the evaluator command in the benchmark configuration and does not accept an evaluator supplied by the caller. The MCP proof covers semantic task IDs, dynamic task selection, fresh-process exposure recall, all three policies, missing state, incomplete monitoring, evaluator failure, safe report redaction, protected-read receipts, and read/write journal behavior.
 
 ## Why Sibyl Memory matters
 
@@ -105,7 +111,7 @@ Use `--repeat 3` to run the full repeatability proof. The command prints one JSO
 
 ## Product / Demo
 
-The current product surface is a local CLI plus two read-only MCP tools, preflight and inspect. There is no frontend, hosted endpoint, or public demo URL.
+The current product surface is a local CLI plus five MCP tools covering preflight, inspect, run, report, and the controlled protected-read boundary. There is no frontend, hosted endpoint, or public demo URL.
 
 The repeatable demo is [demo/checkpoint12_demo.py](demo/checkpoint12_demo.py). Its fixture data and example-only evaluator are [examples/checkout-benchmark/fixture.json](examples/checkout-benchmark/fixture.json) and [examples/checkout-benchmark/evaluator.py](examples/checkout-benchmark/evaluator.py).
 
@@ -129,6 +135,9 @@ flowchart TB
     Policy --> Selected["Selected task IDs"]
     Selected --> Evaluator["CommandEvaluator"]
     Evaluator --> Result["Structured result and journaled outcome"]
+    Result --> McpReport["MCP report retrieval"]
+    ReadBoundary --> McpRead["MCP controlled protected read"]
+    McpRead --> Adapter
 ```
 
 Sibyl is authoritative for Skepis operational exposure state. The external read boundary is authoritative for the successful protected-file read. The configured evaluator is authoritative for its own task results. Model inference does not create hard exposure state.
@@ -142,7 +151,7 @@ Sibyl is authoritative for Skepis operational exposure state. The external read 
 | Local protected-read boundary | Opens the registered in-root file before creating the objective signal | The positive exposure claim has a concrete read receipt |
 | Configured evaluator seam | Hands a developer command only the task IDs returned by the policy gate and validates its structured result | Real evaluation logic stays with the developer's benchmark |
 | Portable clean report | Renders the canonical gate partitions and journaled evaluator result as terminal text, JSON, or Markdown | A shareable artifact can show eligibility, score, claim status, and monitoring limits without copying hidden answers |
-| Read-only MCP preflight and inspect | Calls `EvaluationGate.classify` for the configured benchmark and projects scoped COLD provenance without journaling or running an evaluator | Agents can inspect eligibility and safe exposure evidence through the same core paths without a second policy engine |
+| MCP workflow | Preflight and inspect classify through `EvaluationGate.classify`, run calls `run_evaluation`, report calls `load_latest_evaluation` and `build_report`, and read protected calls `ProtectedReadBoundary` | Agents can use the same scoped core for safe inspection, policy-gated execution, portable reports, and controlled reads without a second policy engine |
 | Historical fixture evaluator | Runs only in the example and regression proof | The old demo remains repeatable without defining normal registration |
 
 ## Proof map
@@ -155,7 +164,8 @@ Sibyl is authoritative for Skepis operational exposure state. The external read 
 | Exposed tasks change the policy result | `src/skepis/policy/gate.py:EvaluationGate.evaluate` calls `_apply_policy` | `tests/test_policy.py:EvaluationGateTests.test_partitions_and_excludes_exposed_tasks` |
 | The evaluator runs only the selected tasks | `src/skepis/eval/runner.py:run_evaluation` creates `EvaluationRequest` from `decision.selected_tasks`; `src/skepis/eval/evaluator.py:CommandEvaluator` validates the returned task IDs | `tests/test_generalized_evaluation.py:GeneralizedEvaluationTests.test_public_workflow_handles_unrelated_dynamic_benchmark_without_fixture` |
 | The report comes from the canonical run and exposes monitoring limits | `src/skepis/report.py:build_report`, `src/skepis/report.py:load_latest_evaluation`, and `src/skepis/cli.py:_cmd_report` | `tests/test_report.py:ReportTests.test_report_reads_the_canonical_result_journaled_by_the_evaluation_runner` and `tests/test_generalized_evaluation.py:GeneralizedEvaluationTests.test_public_workflow_handles_unrelated_dynamic_benchmark_without_fixture` |
-| MCP preflight and inspect reuse the classifier and remain read-only | `src/skepis/mcp.py:preflight` and `src/skepis/mcp.py:inspect` reuse `EvaluationGate.classify`; `src/skepis/mcp.py:create_server` registers exactly `skepis_preflight` and `skepis_inspect` | `tests/test_mcp.py:McpPreflightTests.test_stdio_protocol_exposes_two_read_only_tools_and_preserves_scope` and `tests/test_mcp.py:McpPreflightTests.test_stdio_inspect_redacts_provenance_and_preserves_incomplete_monitoring` |
+| MCP inspection remains scoped and read-only | `src/skepis/mcp.py:preflight` and `src/skepis/mcp.py:inspect` reuse `EvaluationGate.classify`; `src/skepis/mcp.py:create_server` registers the read-only inspection tools | `tests/test_mcp.py:McpPreflightTests.test_stdio_protocol_exposes_two_read_only_tools_and_preserves_scope` and `tests/test_mcp.py:McpPreflightTests.test_stdio_inspect_redacts_provenance_and_preserves_incomplete_monitoring` |
+| MCP run, report, and protected read use the canonical seams | `src/skepis/mcp.py:run`, `src/skepis/mcp.py:report`, and `src/skepis/mcp.py:read_protected` call the existing runner, report loader, report builder, and protected-read boundary | `tests/test_mcp.py:McpWorkflowTests.test_stdio_client_proves_fresh_process_read_run_report_and_policy_modes` and `tests/test_mcp.py:McpWorkflowTests.test_stdio_client_surfaces_evaluator_failure_and_incomplete_monitoring` |
 | Removing Sibyl blocks a clean claim | `src/skepis/policy/gate.py:EvaluationGate._load_tasks` fails closed when WARM state is unavailable | `tests/test_deletion.py:DeletionProofTests.test_deleted_sibyl_state_fails_closed_in_fresh_session` |
 | Known failure modes remain conservative | `src/skepis/capture/local_path.py:LocalPathCapture.mark_observation_gap` and `src/skepis/policy/gate.py:EvaluationGate._read_scoped_observation_gap` preserve uncertainty | `tests/test_hardening.py:HardeningTests.test_partial_warm_cold_write_failure_blocks_clean_claim` and `tests/test_hardening.py:HardeningTests.test_concurrent_capture_preserves_both_exposures` |
 | The complete judge flow repeats without repair | `demo/checkpoint12_demo.py:_run_once` runs the fresh-project sequence | `tests/test_checkpoint12_demo.py:Checkpoint12DemoTests.test_demo_repeats_the_full_judge_proof_from_fresh_projects` |
@@ -185,9 +195,9 @@ The current evidence was verified on 2026-09-01 in this working tree. The public
 - Exact memory deletion followed by fresh `STRICT` evaluation returned `BLOCKED`, all tasks `UNKNOWN`, no selected or evaluated tasks, and `clean_claim_permitted: false`.
 - The generalized proof registered a nine-task benchmark with semantic IDs, two protected-resource patterns, no fixture, and a developer evaluator command. A fresh process recalled one exposed task and the evaluator received the other eight under `EXCLUDE`.
 - The generalized proof also read the resulting run through `skepis report`, producing a report with eight evaluated tasks and an explicit `INCOMPLETE_MONITORING` generic-agent boundary.
-- The read-only MCP preflight and inspect proof exposed exactly two tools, classified a five-task semantic benchmark, preserved tenant scope isolation, returned `UNKNOWN` for a missing store, redacted raw provenance, preserved incomplete-monitoring uncertainty, and emitted no COLD journal writes.
-- The configured WSL suite passed 79 tests with 0 skips.
-- The Windows suite passed 79 tests with 9 dependency-based skips. Seven skips are fresh-process Sibyl proofs and two are MCP protocol proofs because its interpreter cannot import the configured Sibyl client.
+- The MCP stdio proof exposed five tools, classified an arbitrary semantic benchmark across a fresh process boundary, ran `EXCLUDE`, `FLAG`, and `STRICT`, retrieved a report, returned a protected-read receipt, preserved missing-state and incomplete-monitoring uncertainty, redacted evaluator and protected content, and recorded only the expected write-path events.
+- The configured WSL suite passed 93 tests with 0 skips.
+- The Windows suite passed 93 tests with 12 dependency-based skips. The skips cover fresh-process Sibyl and MCP protocol proofs because its interpreter cannot import the configured Sibyl client.
 - The release boundary was checked against the current [official hackathon rules](https://hack.sibyllabs.org/rules): public GitHub repository, OSI-approved license, real commit history, proof-mapped README, Prior Work declaration, fresh-session recall evidence, timestamp or commit evidence, and two public posts. The two posts remain intentionally unsubmitted.
 
 The complete automated demo assertion is [tests/test_checkpoint12_demo.py](tests/test_checkpoint12_demo.py). The broader source tests are in [tests](tests).
@@ -203,7 +213,8 @@ The complete automated demo assertion is [tests/test_checkpoint12_demo.py](tests
 | Missing observation reader or failed gate journal | Avoid a clean claim | Unknown state or unjournaled decision blocks the claim |
 | Evaluator returns an unauthorized or partial task set | Keep execution bound to policy selection | Run fails or remains incomplete, with no clean claim |
 | Report input contains evaluator details or hidden-answer fields | Keep the portable artifact safe and single-sourced | Details and non-scalar or sensitive metrics are omitted, while the canonical score and task partitions remain |
-| Generic Bash, scripts, MCP, or unsupported Codex routes | Avoid claiming coverage that was not observed | Remain outside the bounded adapter as `INCOMPLETE_MONITORING` |
+| MCP run receives an evaluator failure or missing/incomplete state | Preserve fail-closed status through the MCP response and report | `EVALUATOR_FAILED` or `BLOCKED`, with no clean claim |
+| Generic Bash, scripts, browser, internal tools, or unsupported Codex routes | Avoid claiming coverage that was not observed | Remain outside the bounded adapter as `INCOMPLETE_MONITORING` |
 
 ## Repository structure
 
@@ -255,10 +266,10 @@ The deterministic demo needs the Sibyl Memory client declared in [pyproject.toml
 
 ## Limitations
 
-- The only proven hard-exposure route is the controlled `skepis exposure read` command.
-- Generic filesystem, Bash, script, MCP, and Codex activity is not objectively observed by this adapter and remains `INCOMPLETE_MONITORING`.
+- The proven hard-exposure routes are the controlled `skepis exposure read` command and `skepis_read_protected` MCP tool.
+- Generic filesystem, Bash, script, browser, internal-tool, unsupported MCP, and Codex activity is not objectively observed by these adapters and remains `INCOMPLETE_MONITORING`.
 - The configured command seam does not supply model scoring or an Inspect AI integration. The example fixture evaluator is deterministic proof code only.
-- The portable report is local and consumes a saved run result or the latest scoped Sibyl evaluation event. It does not add an MCP report or run interface, and it does not claim generic agent telemetry.
+- The portable report is local and consumes a saved run result or the latest scoped Sibyl evaluation event. The MCP report and run tools use the same canonical report path and do not claim generic agent telemetry.
 - There is no frontend, hosted service, public demo URL, or demo video.
 - The verified environment is local. The local Sibyl store reports the FREE tier while the authenticated server reports a STAKE subscription. The local proof does not depend on upgrading the local tier.
 
