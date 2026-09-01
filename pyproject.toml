@@ -7,10 +7,11 @@ name = "skepis"
 version = "0.1.0"
 description = "Local-first exposure-aware evaluation tooling"
 requires-python = ">=3.11"
-dependencies = ["sibyl-memory-client>=0.7.0"]
+dependencies = ["mcp>=1.27.0,<2", "sibyl-memory-client>=0.7.0"]
 
 [project.scripts]
 skepis = "skepis.cli:main"
+skepis-mcp = "skepis.mcp:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
