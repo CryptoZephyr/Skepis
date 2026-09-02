@@ -263,6 +263,10 @@ The example fixture evaluator is proof code only. It does not define the normal 
 - The report is local and uses the latest scoped Sibyl evaluation event or an explicit saved run input.
 - There is no frontend, hosted service, public API, dashboard, or generic telemetry platform.
 
+## Security
+
+See [SECURITY.md](SECURITY.md) for reporting guidance and the project's trust boundaries.
+
 ## Repository
 
 ```text
