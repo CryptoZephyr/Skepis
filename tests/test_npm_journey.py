@@ -146,7 +146,14 @@ class NpmJourneyTests(unittest.TestCase):
             self.assertEqual(initialized.returncode, 0, initialized.stderr)
             self.assertIn("Skepis ready.", initialized.stdout)
 
-            connected = npx("connect", "--root", str(project), "--json")
+            connected = npx(
+                "connect",
+                "--root",
+                str(project),
+                "--client",
+                "claude",
+                "--json",
+            )
             self.assertEqual(connected.returncode, 0, connected.stderr)
             connection = json.loads(connected.stdout)
             self.assertEqual(connection["status"], "CONNECTED")

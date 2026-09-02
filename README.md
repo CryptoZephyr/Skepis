@@ -34,7 +34,7 @@ skepis init
 
 `init` asks for the benchmark identity, agent or evaluation subject, task IDs, protected-resource mappings, and evaluator command. It creates the canonical project configuration, uses `EXCLUDE` by default, and checks that Sibyl Memory is available. A short summary ends with `Next: skepis connect`.
 
-`connect` detects a project-scoped Claude Code or Cursor MCP setup, adds the existing Skepis stdio server without disturbing other MCP servers, installs one short project instruction, and checks that all five Skepis tools are discoverable. If no supported client is detected, it prints a safe manual JSON configuration.
+`connect` detects a supported project-scoped client from its installed host command or existing project configuration, adds the existing Skepis stdio server without disturbing other MCP servers or host settings, installs one short project instruction, and checks that all five Skepis tools are discoverable. It does not run a full evaluation during connection. If no supported client is detected, it prints a safe manual JSON configuration.
 
 The npm launcher requires Node.js 18 or newer and finds Python 3.11 or newer. It creates a private per-user Python environment for the existing Skepis implementation and its dependencies. Developers who already use Python can install the package directly instead.
 
@@ -127,14 +127,17 @@ Human output explains why each requested task is clean, exposed, or unknown. JSO
 
 ## Project MCP connections
 
-Skepis configures only project-scoped files in the initial supported matrix:
+Skepis configures only project-scoped files in the supported matrix:
 
 | Client | MCP config | Project instruction |
 | --- | --- | --- |
 | Claude Code | `.mcp.json` | `CLAUDE.md` |
 | Cursor | `.cursor/mcp.json` | `.cursor/rules/skepis.mdc` |
+| Codex | `.codex/config.toml` | `AGENTS.md` |
+| Antigravity | `.agents/mcp_config.json` | `.agents/rules/skepis.md` |
+| Gemini CLI | `.gemini/settings.json` | `GEMINI.md` |
 
-Both clients use the same existing five-tool stdio server. The connector preserves other entries in `mcpServers`, writes the canonical absolute config path into the Skepis server command, and verifies the expected tool names after the change.
+All five clients use the same existing five-tool stdio server. The connector preserves other entries and settings, writes the canonical absolute config path into the Skepis server command, and verifies the expected tool names after the change. Codex TOML is merged semantically, so comments and formatting may be normalized while settings remain preserved.
 
 The installed project instruction is deliberately short:
 
@@ -222,12 +225,13 @@ PowerShell uses the same commands with `$env:PYTHONPATH = "src"`. The Python pat
 
 The current evidence covers:
 
-- The complete WSL suite, including the existing Sibyl, capture, policy, evaluator, report, MCP stdio, deletion, scope, and regression proofs.
+- The complete WSL suite, including the three-adapter project connection journey and the existing Sibyl, capture, policy, evaluator, report, MCP stdio, deletion, scope, and regression proofs.
 - The Windows suite, with dependency-based skips where the system interpreter cannot import the configured Sibyl client.
-- The published `skepis@0.1.2` package, with a public `npx skepis@0.1.2 --help` smoke check from an unrelated temporary directory.
-- A packed 23-file npm artifact installed into a separate temporary project.
+- The published `skepis@0.1.4` package, with a public `npx skepis@0.1.4 --help` smoke check from an unrelated temporary directory.
+- A packed npm artifact installed into a separate temporary project.
 - `npx --no-install skepis init` and `skepis connect` from that installed artifact without checkout-relative paths.
 - A clean Windows npm journey using the detected Claude Code project surface, the five-tool MCP server, a successful protected read, a fresh evaluation process, safe report and inspect output, and strict failure after exact Sibyl state deletion.
+- Codex, Antigravity, and Gemini CLI project adapters with idempotent configuration, existing-setting preservation, malformed-config refusal, MCP handshake verification, five-tool discovery, protected-read capture, fresh-session recall, policy-gated evaluation, inspect, and report.
 - Arbitrary semantic task IDs and dynamic task counts without a fixture in the normal evaluator path.
 
 The release proof covers Windows and WSL/Linux. The launcher uses Windows and POSIX process paths, but macOS has not been run in this environment and is not claimed as independently verified.
@@ -252,7 +256,7 @@ The example fixture evaluator is proof code only. It does not define the normal 
 ## Limits
 
 - Protected-read capture covers registered in-root resources through the supported CLI and MCP boundary.
-- Generic filesystem, Bash, browser, internal-tool, unsupported MCP, and unsupported coding-agent activity remains `INCOMPLETE_MONITORING`.
+- Supported project-local MCP connections cover Claude Code, Cursor, Codex, Antigravity, and Gemini CLI. Generic filesystem, Bash, browser, internal-tool, unsupported MCP, and unsupported coding-agent activity remains `INCOMPLETE_MONITORING`.
 - Missing or mismatched Sibyl state remains `UNKNOWN` and `UNAVAILABLE`.
 - Incomplete monitoring, incomplete evaluator coverage, evaluator failure, and unjournaled decisions cannot produce a clean claim.
 - The evaluator seam does not provide model scoring or an Inspect AI integration.

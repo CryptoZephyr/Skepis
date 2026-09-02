@@ -29,7 +29,7 @@ from skepis.capture import (
     ProtectedResource,
 )
 from skepis.eval import CommandEvaluator, EvaluatorError, run_evaluation
-from skepis.integration import connect_project
+from skepis.integration import CLIENT_DEFINITIONS, SUPPORTED_CLIENT_IDS, connect_project
 from skepis.policy import EvaluationGate
 from skepis.report import (
     ReportError,
@@ -82,9 +82,9 @@ def _parser() -> argparse.ArgumentParser:
     connect.add_argument("--config", help="config path, default: skepis.toml under the project root")
     connect.add_argument(
         "--client",
-        choices=("auto", "claude", "cursor"),
+        choices=("auto", *SUPPORTED_CLIENT_IDS),
         default="auto",
-        help="client to configure, default: detect Claude Code or Cursor",
+        help="client to configure, default: detect a supported project client",
     )
     connect.add_argument("--json", action="store_true", dest="as_json")
 
@@ -535,7 +535,8 @@ def _print_connect_result(result: dict[str, Any]) -> None:
         print("No supported MCP client detected.")
         print()
         print("Skepis MCP is ready for manual configuration.")
-        print("Supported project clients: Claude Code and Cursor.")
+        labels = ", ".join(definition.label for definition in CLIENT_DEFINITIONS)
+        print(f"Supported project clients: {labels}.")
         print()
         print("Add this server entry to the client's project MCP config:")
         print(json.dumps(result["manual_configuration"], indent=2, sort_keys=True))
