@@ -1,8 +1,10 @@
 # Skepis
 
-Skepis keeps AI-agent evaluations honest by remembering which benchmark tasks have already been exposed and gating whether an existing evaluator may make a clean claim.
+Skepis is a local-first evaluation-integrity layer for AI-agent benchmarks. It remembers which tasks have been exposed through its supported protected-read boundary and gates whether an existing evaluator may make a clean claim.
 
-It is a local-first benchmark-contamination and evaluation-integrity layer for AI coding-agent benchmarks. It records exposure only when a registered protected resource is successfully read through a supported Skepis boundary. It does not score models, and it is not a bypass-proof sandbox or universal monitor.
+Documentation: [skepis-docs.netlify.app](https://skepis-docs.netlify.app)
+
+It records exposure only when a registered protected resource is successfully read through a supported Skepis boundary. It does not score models, and it is not a bypass-proof sandbox or universal monitor.
 
 Sibyl Memory is the separate persistent state layer Skepis uses to carry scoped exposure state and journal events across process and session boundaries.
 
@@ -314,7 +316,7 @@ See [SECURITY.md](SECURITY.md) for reporting guidance and the project's trust bo
 
 ## Documentation site
 
-The public static documentation site lives in [`skepis docs/`](<skepis docs/README.md>). It is a Vite and React app with a Netlify build configuration. Its local checks are `pnpm run lint` and `pnpm run build` from that directory.
+The public static documentation site is available at [skepis-docs.netlify.app](https://skepis-docs.netlify.app) and lives in [`skepis docs/`](<skepis docs/README.md>). It is a Vite and React app with a Netlify build configuration. Its local checks are `pnpm run lint` and `pnpm run build` from that directory.
 
 ## Repository
 
