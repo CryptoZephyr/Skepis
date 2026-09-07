@@ -1,0 +1,164 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-heading: 'Cabinet Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --font-mono: 'Departure Mono', monospace;
+
+    --background: 44 28% 97%;
+    --foreground: 220 20% 14%;
+    --muted: 40 20% 93%;
+    --muted-foreground: 220 10% 46%;
+    --border: 40 18% 88%;
+    --primary: 160 84% 30%;
+    --primary-foreground: 0 0% 100%;
+  }
+
+  body {
+    background-color: #fbf9f5;
+    color: #1c2024;
+    font-family: var(--font-body);
+    overflow-x: hidden;
+    margin: 0;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-heading);
+  }
+
+  code, pre, kbd, samp {
+    font-family: var(--font-mono);
+  }
+}
+
+/* Typography Utility Classes */
+.font-heading {
+  font-family: var(--font-heading) !important;
+}
+
+.font-body {
+  font-family: var(--font-body) !important;
+}
+
+.font-mono {
+  font-family: var(--font-mono) !important;
+}
+
+/* Subsystem Cards Idle Levitate Animation */
+@keyframes card-levitate {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-7px);
+  }
+}
+
+.subsystem-card-levitate {
+  animation: card-levitate 3.8s ease-in-out infinite;
+  will-change: transform;
+}
+
+.subsystem-card-levitate:hover {
+  animation-play-state: paused;
+}
+
+/* Milk Frosted Glassmorphism Primitives */
+.glass-panel {
+  background: rgba(255, 253, 248, 0.72);
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  box-shadow: 0 16px 36px -12px rgba(60, 50, 40, 0.08), 0 1px 3px 0 rgba(60, 50, 40, 0.04), inset 0 1px 0 0 rgba(255, 255, 255, 0.95);
+}
+
+.glass-panel-subtle {
+  background: rgba(255, 253, 248, 0.5);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(220, 215, 205, 0.55);
+  box-shadow: 0 4px 12px -2px rgba(60, 50, 40, 0.04), inset 0 1px 0 0 rgba(255, 255, 255, 0.8);
+}
+
+.glass-card-interactive {
+  background: rgba(255, 253, 248, 0.65);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(230, 224, 214, 0.7);
+  box-shadow: 0 8px 24px -6px rgba(60, 50, 40, 0.06), inset 0 1px 0 0 rgba(255, 255, 255, 0.9);
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.glass-card-interactive:hover {
+  border-color: rgba(16, 185, 129, 0.5);
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: 0 16px 32px -8px rgba(60, 50, 40, 0.12), inset 0 1px 0 0 rgba(255, 255, 255, 1);
+}
+
+/* Base UI accessible popup and dialog tokens */
+.base-dialog-backdrop {
+  background: rgba(40, 36, 30, 0.45);
+  backdrop-filter: blur(10px);
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+}
+
+.base-dialog-popup {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 51;
+  max-width: 32rem;
+  width: 90vw;
+  max-height: 85vh;
+  overflow-y: auto;
+}
+
+.base-tooltip-popup {
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(14px);
+  border: 1px solid rgba(220, 215, 205, 0.9);
+  color: #1c2024;
+  padding: 6px 10px;
+  font-size: 11px;
+  font-family: var(--font-body);
+  border-radius: 6px;
+  box-shadow: 0 10px 25px -5px rgba(60, 50, 40, 0.12);
+  z-index: 60;
+}
+
+/* Reduced transparency support */
+@media (prefers-reduced-transparency: reduce) {
+  .glass-panel, .glass-panel-subtle, .glass-card-interactive {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    background: #f5f1e8 !important;
+  }
+}
+
+/* Tabular figures for telemetry */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Custom subtle scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #fbf9f5;
+}
+::-webkit-scrollbar-thumb {
+  background: #e2ddd3;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #cfc8bb;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #374151;
+}

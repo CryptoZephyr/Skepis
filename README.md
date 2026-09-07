@@ -261,11 +261,15 @@ The example fixture evaluator is proof code only. It does not define the normal 
 - Incomplete monitoring, incomplete evaluator coverage, evaluator failure, and unjournaled decisions cannot produce a clean claim.
 - The evaluator seam does not provide model scoring or an Inspect AI integration.
 - The report is local and uses the latest scoped Sibyl evaluation event or an explicit saved run input.
-- There is no frontend, hosted service, public API, dashboard, or generic telemetry platform.
+- The core product has no backend, hosted service, public API, dashboard, or generic telemetry platform. This repository also contains a separate static documentation site.
 
 ## Security
 
 See [SECURITY.md](SECURITY.md) for reporting guidance and the project's trust boundaries.
+
+## Documentation site
+
+The public static documentation site lives in [`skepis docs/`](<skepis docs/README.md>). It is a Vite and React app with a Netlify build configuration. Its local checks are `pnpm run lint` and `pnpm run build` from that directory.
 
 ## Repository
 
@@ -278,6 +282,11 @@ See [SECURITY.md](SECURITY.md) for reporting guidance and the project's trust bo
 │   └── checkpoint12_demo.py
 ├── examples/
 │   └── checkout-benchmark/
+├── skepis docs/
+│   ├── src/
+│   ├── public/
+│   ├── package.json
+│   └── netlify.toml
 ├── package.json
 ├── pyproject.toml
 ├── src/
