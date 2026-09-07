@@ -20,16 +20,24 @@ export const DOCS_CONTENT: DocContentMap = {
     category: '01 / Start',
     onThisPage: [
       { id: 'the-problem', title: 'The Contamination Problem' },
+      { id: 'plain-language', title: 'Plain-language Model' },
+      { id: 'evidence-example', title: 'Failure Mode and Correction' },
       { id: 'mental-model', title: 'One-Sentence Mental Model' },
-      { id: 'core-invariant', title: 'The Core Invariant' },
+      { id: 'core-invariant', title: 'The Supported Invariant' },
+      { id: 'coverage-boundary', title: 'Monitoring Boundary' },
       { id: 'who-it-is-for', title: 'Target Audience' },
       { id: 'what-skepis-is-not', title: 'Product Boundary' },
+      { id: 'where-next', title: 'Where This Goes Next' },
       { id: 'next-steps', title: 'Where to Go Next' },
     ],
     content: (
       <div className="space-y-6">
         <p className="text-sm leading-relaxed text-stone-700">
-          <strong>Skepis</strong> is a local-first, policy-gated evaluation and protected-resource capture system for AI coding-agent benchmarks. It remembers which benchmark material an AI agent has already observed across prior sessions, preventing exposed tasks from masquerading as clean evaluation evidence.
+          <strong>Skepis</strong> keeps AI-agent evaluations honest by remembering which benchmark tasks have already been exposed and gating whether an existing evaluator may make a clean claim. It records exposure only when a registered protected resource is successfully read through a supported Skepis boundary. It does not score models, and it is not a bypass-proof sandbox or universal monitor.
+        </p>
+
+        <p className="text-xs leading-relaxed text-stone-700">
+          <strong>Sibyl Memory</strong> is the separate persistent state layer Skepis uses to carry scoped exposure state and journal events across process and session boundaries.
         </p>
 
         <h2 id="the-problem" className="font-heading text-lg font-bold text-stone-900 pt-4 border-t border-stone-200">
@@ -42,39 +50,101 @@ export const DOCS_CONTENT: DocContentMap = {
           In a later evaluation session, the benchmark runner evaluates the agent. Because the evaluator runs in a fresh process without memory of earlier sessions, it assumes every task is pristine and clean. The agent gets scored on questions it already peeked at, creating wildly misleading benchmark results.
         </p>
 
-        <Callout type="invariant" title="The Core Invariant">
-          A task that has been objectively exposed to the evaluation subject must never be counted as clean unseen evidence unless the benchmark policy explicitly resets or replaces that task.
+        <h2 id="plain-language" className="font-heading text-lg font-bold text-stone-900 pt-4 border-t border-stone-200">
+          Plain-language Model
+        </h2>
+        <p className="text-xs leading-relaxed text-stone-700">
+          If an agent reads an answer file through the protected-read path, Skepis remembers that task. On a later evaluation, it excludes or blocks the task according to policy. If the agent uses a route outside the supported boundary, Skepis reports incomplete monitoring instead of pretending the task is clean.
+        </p>
+
+        <h2 id="evidence-example" className="font-heading text-lg font-bold text-stone-900 pt-4 border-t border-stone-200">
+          Failure Mode and Correction
+        </h2>
+        <p className="text-xs leading-relaxed text-stone-700">
+          This simplified example shows why an evaluator needs exposure history. The values illustrate the decision boundary, not a model score or an independent user result.
+        </p>
+        <CodeBlock
+          code={`WITHOUT AN INTEGRITY GATE
+Agent: reads private/answers/refund.yaml
+Evaluator: receives all 18 task IDs and reports its score
+Problem: the evaluator has no evidence of the earlier read
+
+WITH THE SKEPIS PROTECTED-READ BOUNDARY
+Skepis: refund-idempotency was exposed
+Requested: 18 tasks
+Selected for evaluation: 17 clean tasks
+Clean claim: permitted for the selected set`}
+          language="text"
+        />
+
+        <Callout type="invariant" title="The Supported Invariant">
+          When a registered protected resource is successfully read through a supported Skepis boundary, the task is marked exposed and cannot contribute to a clean claim unless the benchmark policy explicitly resets or replaces that task.
         </Callout>
 
         <h2 id="mental-model" className="font-heading text-lg font-bold text-stone-900 pt-4 border-t border-stone-200">
           One-Sentence Mental Model
         </h2>
         <div className="p-4 rounded-lg bg-[#f4f1eb] border border-stone-300 font-heading text-sm font-semibold text-stone-900 italic">
-          &ldquo;Skepis keeps AI-agent evaluations honest by remembering which benchmark tasks were exposed in prior sessions and excluding them from clean scoring claims.&rdquo;
+          &ldquo;Know which benchmark tasks your agent can still honestly be tested on.&rdquo;
         </div>
 
         <h2 id="core-invariant" className="font-heading text-lg font-bold text-stone-900 pt-4 border-t border-stone-200">
           Why Git and Local State Are Insufficient
         </h2>
         <p className="text-xs leading-relaxed text-stone-700">
-          A coding agent can inspect a protected file using an MCP tool or terminal read without modifying a single byte in Git. Because no commits or file diffs were generated, Git cannot testify to what the agent observed. Skepis uses <strong>Sibyl Memory</strong> to persist objective exposure events outside the agent transcript and repository files, surviving process and session destruction.
+          A coding agent can inspect a protected file without modifying a single byte in Git. Because no commits or file diffs were generated, Git cannot testify to what the agent observed. Skepis uses <strong>Sibyl Memory</strong> to persist objective exposure events outside the agent transcript and repository files, surviving process and session destruction.
         </p>
+
+        <h2 id="coverage-boundary" className="font-heading text-lg font-bold text-stone-900 pt-4 border-t border-stone-200">
+          Monitoring Boundary
+        </h2>
+        <p className="text-xs leading-relaxed text-stone-700">
+          Installing an MCP server does not create universal observation. Skepis makes hard exposure decisions only for the boundary it controls and keeps gaps visible.
+        </p>
+        <div className="overflow-x-auto rounded-lg border border-stone-200">
+          <table className="w-full text-left text-xs">
+            <thead className="bg-stone-100 text-stone-900">
+              <tr>
+                <th className="p-2.5 font-semibold">Surface</th>
+                <th className="p-2.5 font-semibold">Status</th>
+                <th className="p-2.5 font-semibold">Meaning</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-stone-200 bg-white text-stone-700">
+              <tr>
+                <td className="p-2.5">Registered protected reads</td>
+                <td className="p-2.5 font-mono text-emerald-800">COMPLETE</td>
+                <td className="p-2.5">Successful reads create objective exposure evidence.</td>
+              </tr>
+              <tr>
+                <td className="p-2.5">Generic shell, filesystem, browser, or unsupported MCP access</td>
+                <td className="p-2.5 font-mono text-amber-800">INCOMPLETE_MONITORING</td>
+                <td className="p-2.5">The route is outside the current capture boundary.</td>
+              </tr>
+              <tr>
+                <td className="p-2.5">Missing or mismatched Sibyl state</td>
+                <td className="p-2.5 font-mono text-red-700">UNKNOWN</td>
+                <td className="p-2.5">The task cannot support a clean claim until evidence is available.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
 
         <h2 id="who-it-is-for" className="font-heading text-lg font-bold text-stone-900 pt-4 border-t border-stone-200">
           Target Audience
         </h2>
         <ul className="list-disc list-inside text-xs leading-relaxed text-stone-700 space-y-1.5 pl-2">
           <li><strong>Coding Agent Developers:</strong> Building agents on Claude Code, Cursor, Codex, Antigravity, or Gemini CLI who need repeatable benchmarks.</li>
-          <li><strong>Evaluation Engineers:</strong> Preventing data leakage when testing regression suites against LLM agents.</li>
-          <li><strong>Benchmark Maintainers:</strong> Enforcing cryptographic and durable isolation between evaluation test suites and agent worktrees.</li>
-          <li><strong>AI Startups & Labs:</strong> Producing audit-ready, evidence-backed clean evaluation claims without manual verification overhead.</li>
+          <li><strong>Evaluation Engineers:</strong> Handling known exposure when testing regression suites against LLM agents.</li>
+          <li><strong>Benchmark Maintainers:</strong> Tracking durable exposure history across evaluation test suites and agent worktrees.</li>
+          <li><strong>AI Startups & Labs:</strong> Producing evidence-backed clean evaluation claims with explicit monitoring limits.</li>
         </ul>
 
         <h2 id="what-skepis-is-not" className="font-heading text-lg font-bold text-stone-900 pt-4 border-t border-stone-200">
           Product Boundary (What Skepis Is Not)
         </h2>
         <p className="text-xs leading-relaxed text-stone-700">
-          To maintain absolute technical focus, Skepis explicitly rejects scope creep:
+          To maintain a narrow technical focus, Skepis explicitly rejects scope creep:
         </p>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
           <div className="p-3 bg-stone-50 rounded border border-stone-200 text-stone-700">
@@ -90,6 +160,16 @@ export const DOCS_CONTENT: DocContentMap = {
             <strong>✕ NOT an LLM heuristic evaluator</strong>: Model inference never creates hard contamination state.
           </div>
         </div>
+
+        <h2 id="where-next" className="font-heading text-lg font-bold text-stone-900 pt-4 border-t border-stone-200">
+          Where This Goes Next
+        </h2>
+        <p className="text-xs leading-relaxed text-stone-700">
+          The current product is a local evaluation-integrity layer. The roadmap keeps the same evidence and eligibility model at the center while exploring shared team state, independent evaluation, and eventually an evaluation network where a clean result can be checked by someone other than the agent developer.
+        </p>
+        <p className="text-xs leading-relaxed text-stone-700">
+          Those are future directions, not current capabilities. Inspect AI integration, Base settlement, and Virtuals coordination remain deferred until a real workflow needs them.
+        </p>
 
         <h2 id="next-steps" className="font-heading text-lg font-bold text-stone-900 pt-4 border-t border-stone-200">
           Where to Go Next
@@ -975,7 +1055,7 @@ Monitoring history incomplete`}</pre>
     content: (
       <div className="space-y-6">
         <p className="text-sm leading-relaxed text-stone-700">
-          The evaluator is an arbitrary program supplied by the developer that scores benchmark tasks.
+          The evaluator is an arbitrary program supplied by the developer that scores benchmark tasks. Skepis does not replace the evaluator or provide model scoring itself.
         </p>
 
         <h2 id="subshell-safety" className="font-heading text-lg font-bold text-stone-900 pt-4 border-t border-stone-200">
@@ -1356,7 +1436,7 @@ jobs:
     category: '06 / Production',
     onThisPage: [
       { id: 'test-evidence', title: 'Verified Test Suites' },
-      { id: 'adapter-proofs', title: '5-Adapter Integration Proofs' },
+      { id: 'adapter-proofs', title: '5-Adapter Configuration Checks' },
       { id: 'fresh-session-proof', title: 'Fresh-Session Recall Proof' },
     ],
     content: (
@@ -1382,17 +1462,17 @@ jobs:
         </div>
 
         <h2 id="adapter-proofs" className="font-heading text-lg font-bold text-stone-900 pt-4 border-t border-stone-200">
-          5-Adapter Integration Proofs
+          5-Adapter Configuration Checks
         </h2>
         <p className="text-xs leading-relaxed text-stone-700">
-          Tested with live project configuration files for Claude Code (<code className="font-mono text-stone-900">.mcp.json</code>), Cursor (<code className="font-mono text-stone-900">.cursor/mcp.json</code>), Codex (<code className="font-mono text-stone-900">.codex/config.toml</code>), Antigravity (<code className="font-mono text-stone-900">.agents/mcp_config.json</code>), and Gemini CLI (<code className="font-mono text-stone-900">.gemini/settings.json</code>).
+          Tested against project-local configuration files for Claude Code (<code className="font-mono text-stone-900">.mcp.json</code>), Cursor (<code className="font-mono text-stone-900">.cursor/mcp.json</code>), Codex (<code className="font-mono text-stone-900">.codex/config.toml</code>), Antigravity (<code className="font-mono text-stone-900">.agents/mcp_config.json</code>), and Gemini CLI (<code className="font-mono text-stone-900">.gemini/settings.json</code>). These checks do not prove observation of every host-application session.
         </p>
 
         <h2 id="fresh-session-proof" className="font-heading text-lg font-bold text-stone-900 pt-4 border-t border-stone-200">
           Fresh-Session Recall Proof
         </h2>
         <p className="text-xs leading-relaxed text-stone-700">
-          Proves that when Session A executes a protected read, the process is killed completely with <code className="font-mono text-stone-900">SIGKILL</code>, and Session B starts as an unrelated process, the exposure is flawlessly recalled from Sibyl.
+          Tests that when Session A executes a protected read, the process ends, and Session B starts as an unrelated process, the exposure is recalled from Sibyl.
         </p>
       </div>
     ),
@@ -1408,7 +1488,7 @@ jobs:
     content: (
       <div className="space-y-6">
         <p className="text-sm leading-relaxed text-stone-700">
-          Skepis produces shareable, cryptographic clean evaluation reports that prove benchmark integrity.
+          Skepis produces portable clean-evaluation reports that make task eligibility, policy decisions, evaluator results, and monitoring coverage explicit. The report is derived from canonical state and does not prove observation outside the supported boundary.
         </p>
 
         <h2 id="json-report" className="font-heading text-lg font-bold text-stone-900 pt-4 border-t border-stone-200">
@@ -1500,7 +1580,7 @@ jobs:
           Subprocess Isolation
         </h2>
         <p className="text-xs leading-relaxed text-stone-700">
-          Evaluator commands execute directly without a shell, preventing argument injection attacks.
+          Evaluator commands execute directly without a shell, reducing shell-injection risk. Evaluator code and benchmark inputs remain project-owned code and data.
         </p>
       </div>
     ),
@@ -1530,7 +1610,7 @@ jobs:
           Provenance Redaction
         </h2>
         <p className="text-xs leading-relaxed text-stone-700">
-          Reports and inspection outputs scrub sensitive raw evaluator dumps, ensuring public benchmarks can share clean proof without leaking proprietary test suites.
+          Reports and inspection outputs scrub sensitive raw evaluator dumps, so public benchmarks can share clean proof without leaking proprietary test suites.
         </p>
       </div>
     ),

@@ -18,7 +18,7 @@ export const SponsorSection: React.FC<SponsorSectionProps> = ({ onNavigateToDocs
           Backed by Sibyl Labs: Built for Agent Runtimes
         </h2>
         <p className="text-xs sm:text-sm text-stone-600 font-body leading-relaxed max-w-[56ch] mx-auto">
-          Skepis relies on Sibyl Memory for cross-session contamination tracking, supported by leading AI agent environments.
+          Sibyl Memory is the separate persistent state layer that carries Skepis exposure evidence across process and session boundaries.
         </p>
       </div>
 
@@ -39,7 +39,7 @@ export const SponsorSection: React.FC<SponsorSectionProps> = ({ onNavigateToDocs
             </div>
 
             <p className="text-xs sm:text-sm text-stone-700 leading-relaxed font-body max-w-[62ch]">
-              Sibyl provides the mandatory, load-bearing persistent memory architecture that powers Skepis. It carries canonical WARM exposure eligibility and immutable COLD audit journals across session boundaries, ensuring evaluations never hallucinate clean claims.
+              Sibyl Memory carries scoped exposure state and journal events across process and session boundaries. Skepis uses that state to gate clean claims after exposure is captured through its supported boundary. It does not observe unmediated shell, browser, filesystem, or unsupported MCP access.
             </p>
 
             <div className="flex flex-wrap gap-3 sm:gap-4 pt-1 text-xs font-mono text-stone-600">

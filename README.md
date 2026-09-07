@@ -1,8 +1,14 @@
 # Skepis
 
-An agent can read a hidden answer, protected test, solution patch, or other benchmark material while it is being developed. A later evaluator can then count that task as clean without knowing what happened in the earlier session.
+Skepis keeps AI-agent evaluations honest by remembering which benchmark tasks have already been exposed and gating whether an existing evaluator may make a clean claim.
 
-Skepis keeps task eligibility as durable, evidence-backed state. The preferred developer journey is:
+It is a local-first benchmark-contamination and evaluation-integrity layer for AI coding-agent benchmarks. It records exposure only when a registered protected resource is successfully read through a supported Skepis boundary. It does not score models, and it is not a bypass-proof sandbox or universal monitor.
+
+Sibyl Memory is the separate persistent state layer Skepis uses to carry scoped exposure state and journal events across process and session boundaries.
+
+In plain language, if an agent reads an answer file through the protected-read path, Skepis remembers that task. On a later evaluation, it excludes or blocks the task according to policy. If the agent uses a route outside the supported boundary, Skepis reports incomplete monitoring instead of pretending the task is clean.
+
+The preferred developer journey is:
 
 ```text
 npx skepis init
@@ -15,6 +21,27 @@ skepis eval
 # only when an explanation is needed
 skepis inspect
 ```
+
+## Why this matters
+
+An ordinary evaluator can see the final task result but not what the agent saw during earlier development. A task can therefore receive a clean-looking score after its answer file was already exposed.
+
+The following is a simplified example of the difference:
+
+```text
+Without an integrity gate
+Agent: reads private/answers/refund.yaml
+Evaluator: receives all 18 task IDs and reports its score
+Problem: the evaluator has no evidence of the earlier read
+
+With the Skepis protected-read boundary
+Skepis: refund-idempotency was exposed
+Requested: 18 tasks
+Selected for evaluation: 17 clean tasks
+Clean claim: permitted for the selected set
+```
+
+This example describes the decision boundary, not a model score. The repository's automated coverage tests the same exposure, fresh-session recall, policy, and evaluator-selection path.
 
 ## Quick start
 
@@ -184,9 +211,19 @@ skepis report --format markdown --output skepis-report.md
 
 The portable report includes the benchmark, evaluation subject, run ID, task partitions, selected and evaluated tasks, policy, score, clean-claim decision, journal markers, and monitoring coverage. Raw evaluator details, protected content, and sensitive metric fields are omitted.
 
-## The invariant
+## The supported invariant
 
-> A task marked exposed by objective evidence cannot contribute to a clean score unless an explicit benchmark policy changes its eligibility.
+> When a registered protected resource is successfully read through a supported Skepis boundary, the task is marked exposed and cannot contribute to a clean claim unless an explicit benchmark policy changes its eligibility.
+
+This is a conditional product invariant, not a claim of universal observation. Skepis can make a hard exposure decision for the boundary it controls. It cannot label an unobserved shell, browser, filesystem, internal-tool, or unsupported MCP read as exposed after the fact.
+
+### Monitoring boundary
+
+| Surface | Status | Meaning |
+| --- | --- | --- |
+| Registered protected reads through the supported CLI or MCP boundary | `COMPLETE` | A successful read creates objective exposure evidence. |
+| Generic shell, filesystem, browser, internal-tool, or unsupported MCP access | `INCOMPLETE_MONITORING` | The route is outside the current capture boundary. |
+| Missing or mismatched Sibyl state | `UNKNOWN` | The task cannot support a clean claim until evidence is available. |
 
 The implementation preserves the existing Sibyl, capture, policy, evaluator, report, and MCP seams:
 
@@ -234,6 +271,8 @@ The current evidence covers:
 - Codex, Antigravity, and Gemini CLI project adapters with idempotent configuration, existing-setting preservation, malformed-config refusal, MCP handshake verification, five-tool discovery, protected-read capture, fresh-session recall, policy-gated evaluation, inspect, and report.
 - Arbitrary semantic task IDs and dynamic task counts without a fixture in the normal evaluator path.
 
+This is maintainer-run automated and local integration evidence. No independent user adoption, traction, or external benchmark-maintainer validation is claimed yet.
+
 The release proof covers Windows and WSL/Linux. The launcher uses Windows and POSIX process paths, but macOS has not been run in this environment and is not claimed as independently verified.
 
 Run the opt-in distribution proof explicitly:
@@ -262,6 +301,12 @@ The example fixture evaluator is proof code only. It does not define the normal 
 - The evaluator seam does not provide model scoring or an Inspect AI integration.
 - The report is local and uses the latest scoped Sibyl evaluation event or an explicit saved run input.
 - The core product has no backend, hosted service, public API, dashboard, or generic telemetry platform. This repository also contains a separate static documentation site.
+
+## Where this goes next
+
+The current product is a local evaluation-integrity layer. The roadmap extends the same eligibility and evidence model toward shared team state, independent evaluation, and eventually an evaluation network where a clean result can be checked by someone other than the agent developer.
+
+Those are future directions, not current capabilities. Base and Virtuals remain deferred until Skepis has a real payment or independent-evaluation workflow that needs them. Inspect AI integration is also future work. The current submission stays focused on the Sibyl-backed capture, policy, evaluator, and report loop.
 
 ## Security
 

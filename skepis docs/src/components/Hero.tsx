@@ -40,12 +40,12 @@ export const Hero: React.FC<HeroProps> = ({
         <div className="w-full flex flex-col items-start text-left space-y-5 sm:space-y-6 p-5 sm:p-8 md:p-12 rounded-xl sm:rounded-2xl glass-panel border border-white/95 shadow-2xl backdrop-blur-2xl bg-white/85 transition-all duration-300">
           {/* Direct headline without fluff badges */}
           <h1 className="font-heading text-2xl sm:text-4xl md:text-5xl lg:text-6xl font-extrabold tracking-tight text-stone-950 leading-[1.12] text-balance">
-            Policy-gated evaluation for AI coding-agent benchmarks
+            Know which benchmark tasks your agent can still honestly be tested on
           </h1>
 
           {/* Restrained value prop copy */}
           <p className="font-body text-xs sm:text-base text-stone-700 max-w-[56ch] leading-relaxed font-normal">
-            Skepis persists objective exposure to protected material, preventing contaminated tasks from masquerading as clean evaluation evidence.
+            Skepis records exposure through its supported protected-read boundary and gates clean claims. It is designed for cooperative agent workflows, not as a bypass-proof sandbox or universal monitor.
           </p>
 
           {/* Quick Start Command Line Bar */}

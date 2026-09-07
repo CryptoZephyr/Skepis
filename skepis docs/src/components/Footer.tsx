@@ -182,7 +182,7 @@ export const Footer: React.FC<FooterProps> = ({ onNavigateToDocs }) => {
           <Dialog.Popup className="base-dialog-popup">
             <div className="glass-panel border border-stone-300 rounded-lg p-6 text-left shadow-2xl bg-white">
               <Dialog.Title className="text-base font-bold text-stone-900 mb-2 font-heading">
-                {activeDialog === 'security' ? 'Security & Invariant Guarantee' : 'Privacy Boundary'}
+                {activeDialog === 'security' ? 'Security & Policy Boundary' : 'Privacy Boundary'}
               </Dialog.Title>
               <Dialog.Description className="text-xs text-stone-700 space-y-3 leading-relaxed font-body">
                 {activeDialog === 'security' ? (

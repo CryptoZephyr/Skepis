@@ -99,7 +99,7 @@ export const ArchitectureSection: React.FC = () => {
           </div>
           <h4 className="font-heading text-sm font-bold text-stone-900">Policy-Gated Eval</h4>
           <p className="text-stone-600 leading-relaxed">
-            Filters contaminated tasks, evaluates clean subsets, and produces audit-ready clean claims with zero hallucinated scores.
+            Filters tasks with recorded exposure, evaluates the permitted subset, and keeps evaluator scores separate from eligibility decisions.
           </p>
         </div>
       </div>
